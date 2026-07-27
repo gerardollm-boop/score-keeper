@@ -12,13 +12,13 @@ import { initializeApp } from "firebase/app";
 import { getDatabase } from "firebase/database";
 
 const firebaseConfig = {
-  apiKey:            "PEGA_AQUI_TU_apiKey",
-  authDomain:        "PEGA_AQUI_TU_authDomain",
-  databaseURL:       "PEGA_AQUI_TU_databaseURL",
-  projectId:         "PEGA_AQUI_TU_projectId",
-  storageBucket:     "PEGA_AQUI_TU_storageBucket",
-  messagingSenderId: "PEGA_AQUI_TU_messagingSenderId",
-  appId:             "PEGA_AQUI_TU_appId",
+  apiKey:            "AIzaSyCMRprV5uoj6esP8LMnv9MOJS64zmwEMcA",
+  authDomain:        "score-keeper-b8ed1.firebaseapp.com",
+  databaseURL:       "https://score-keeper-b8ed1-default-rtdb.firebaseio.com",
+  projectId:         "score-keeper-b8ed1",
+  storageBucket:     "score-keeper-b8ed1.firebasestorage.app",
+  messagingSenderId: "901609703137",
+  appId:             "1:901609703137:web:1014aef72ab977742399a0",
 };
 
 // Si no has configurado Firebase, la app funciona igual
