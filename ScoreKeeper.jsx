@@ -966,7 +966,7 @@ function SharedRoundTab({ players, courses, percentages, onSaveRound }) {
         .map((id) => ({ id, name: players.find((p) => p.id === id)?.name || "", handicap: Number(handicaps[id]) || 0 }));
     const groupA = buildGroup("A");
     const groupB = buildGroup("B");
-    if (groupA.length === 0 || groupB.length === 0) return;
+   if (groupA.length === 0 || groupB.length === 0) { alert("Necesitas al menos un jugador en el Grupo A y uno en el Grupo B."); return; };
     const newCode = makeRoundCode();
     const newMeta = { code: newCode, date, courseName: course.name, pars, si, salida, v1, v2, bet: Number(bet) || 0, percentages: pct, roundHcpPct: Number(roundHcpPct) || 100, groupA, groupB, createdAt: Date.now() };
     await sSet(sharedMetaKey(newCode), newMeta);
