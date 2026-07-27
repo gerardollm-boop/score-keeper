@@ -26,7 +26,7 @@ const firebaseConfig = {
 // (solo la función "2 Grupos" requiere Firebase)
 let db = null;
 try {
-  if (!firebaseConfig.apiKey.startsWith("AIzaSyCMRprV5uoj6esP8LMnv9MOJS64zmwEMcA")) {
+  if (firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith("PEGA_AQUI")) {
     const app = initializeApp(firebaseConfig);
     db = getDatabase(app);
   }
