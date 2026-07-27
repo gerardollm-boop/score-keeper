@@ -19,13 +19,14 @@ const firebaseConfig = {
   storageBucket:     "score-keeper-b8ed1.firebasestorage.app",
   messagingSenderId: "901609703137",
   appId:             "1:901609703137:web:1014aef72ab977742399a0",
+  measurementId:     "G-Q75VX5EN23"
 };
 
 // Si no has configurado Firebase, la app funciona igual
 // (solo la función "2 Grupos" requiere Firebase)
 let db = null;
 try {
-  if (!firebaseConfig.apiKey.startsWith("PEGA_AQUI")) {
+  if (!firebaseConfig.apiKey.startsWith("AIzaSyCMRprV5uoj6esP8LMnv9MOJS64zmwEMcA")) {
     const app = initializeApp(firebaseConfig);
     db = getDatabase(app);
   }
