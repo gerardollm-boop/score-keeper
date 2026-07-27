@@ -955,7 +955,8 @@ function SharedRoundTab({ players, courses, percentages, onSaveRound }) {
   };
 
   const createRound = async () => {
-    if (!course || selected.length < 2) return;
+    if (!course) { alert("Primero selecciona un campo."); return; }
+    if (selected.length < 2) { alert("Palomea al menos 2 jugadores."); return; }
     const pars = course.pars.map((p) => Number(p) || 4);
     const si = (salida === 10 ? course.siFrom10 : course.siFrom1).map((s) => Number(s) || 1);
     const { v1, v2 } = vueltaHoles(salida);
