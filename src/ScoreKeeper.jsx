@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { storageGet, storageSet, sharedGet, sharedSet, firebaseEnabled } from "./storage";
 
 // ---------- Constants ----------
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -181,14 +180,14 @@ function settleOyes(participants, bet, pctFront, pctBack, entries, v1, v2) {
 // ---------- Storage ----------
 async function loadData() {
   try {
-    const r = await storageGet("scorekeeper-data");
+    const r = await window.storage.get("scorekeeper-data");
     if (r && r.value) return JSON.parse(r.value);
   } catch (e) {}
   return { players: [], rounds: [], courses: [], percentages: DEFAULT_PCT };
 }
 async function saveData(data) {
   try {
-    await storageSet("scorekeeper-data", JSON.stringify(data));
+    await window.storage.set("scorekeeper-data", JSON.stringify(data));
   } catch (e) {
     console.error("Storage error", e);
   }
@@ -197,7 +196,7 @@ async function saveData(data) {
 // ---------- Shared round storage (for 2-group collaborative rounds) ----------
 async function sGet(key) {
   try {
-    const r = await sharedGet(key);
+    const r = await window.storage.get(key, true);
     return r && r.value ? JSON.parse(r.value) : null;
   } catch (e) {
     return null;
@@ -205,7 +204,7 @@ async function sGet(key) {
 }
 async function sSet(key, value) {
   try {
-    await sharedSet(key, JSON.stringify(value));
+    await window.storage.set(key, JSON.stringify(value), true);
   } catch (e) {
     console.error("Shared storage error", e);
   }
@@ -243,6 +242,8 @@ export default function ScoreKeeper() {
   const [rounds, setRounds] = useState([]);
   const [courses, setCourses] = useState([]);
   const [percentages, setPercentages] = useState(DEFAULT_PCT);
+  const [groupCode, setGroupCode] = useState("");
+  const [syncing, setSyncing] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -251,9 +252,45 @@ export default function ScoreKeeper() {
       setRounds(d.rounds || []);
       setCourses(d.courses || []);
       setPercentages(d.percentages || DEFAULT_PCT);
+      setGroupCode(d.groupCode || "");
       setLoaded(true);
+      // Auto-sync on load if group code is set
+      if (d.groupCode) syncFromGroup(d.groupCode, d.rounds || [], (synced) => {
+        setRounds(synced);
+        saveData({ ...d, rounds: synced });
+      });
     });
   }, []);
+
+  // Push a round to the shared group store
+  const pushRoundToGroup = async (round, code) => {
+    if (!code) return;
+    const listKey = `grp-${code}-list`;
+    const existing = await sGet(listKey) || [];
+    if (!existing.includes(round.id)) {
+      await sSet(listKey, [...existing, round.id]);
+    }
+    await sSet(`grp-${code}-rnd-${round.id}`, round);
+  };
+
+  // Pull rounds from shared group store, merge into local
+  const syncFromGroup = async (code, localRounds, onDone) => {
+    if (!code) return;
+    setSyncing(true);
+    try {
+      const ids = await sGet(`grp-${code}-list`) || [];
+      const localIds = new Set(localRounds.map((r) => r.id));
+      const fetched = await Promise.all(
+        ids.filter((id) => !localIds.has(id)).map((id) => sGet(`grp-${code}-rnd-${id}`))
+      );
+      const newRounds = fetched.filter(Boolean);
+      if (newRounds.length > 0) {
+        const merged = [...newRounds, ...localRounds].sort((a, b) => b.date?.localeCompare(a.date || "") || 0);
+        onDone(merged);
+      }
+    } catch (e) {}
+    setSyncing(false);
+  };
 
   const persist = (next) => {
     const data = {
@@ -261,12 +298,19 @@ export default function ScoreKeeper() {
       rounds: next.rounds ?? rounds,
       courses: next.courses ?? courses,
       percentages: next.percentages ?? percentages,
+      groupCode: next.groupCode ?? groupCode,
     };
     if (next.players) setPlayers(next.players);
-    if (next.rounds) setRounds(next.rounds);
+    if (next.rounds !== undefined) setRounds(next.rounds);
     if (next.courses) setCourses(next.courses);
     if (next.percentages) setPercentages(next.percentages);
+    if (next.groupCode !== undefined) setGroupCode(next.groupCode);
     saveData(data);
+    // Push new round to group when a round is saved
+    if (next.rounds && next.rounds.length > (rounds.length)) {
+      const newRound = next.rounds[0];
+      pushRoundToGroup(newRound, next.groupCode ?? groupCode);
+    }
   };
 
   if (!loaded) {
@@ -297,11 +341,11 @@ export default function ScoreKeeper() {
         </div>
         <nav className="flex gap-1 mt-4 font-body text-sm flex-wrap">
           {[
-            ["ronda", "Nueva ronda"],
-            ["compartida", "2 grupos"],
+            ["ronda", "⛳ Ronda"],
+            ["compartida", "👥 2 Grupos"],
             ["jugadores", "Jugadores"],
             ["campos", "Campos"],
-            ["historial", "Historial"],
+            ["historial", "📋 Historial"],
             ["acumulado", "Acumulado"],
             ["mystats", "Mis Stats"],
           ].map(([key, label]) => (
@@ -322,6 +366,23 @@ export default function ScoreKeeper() {
             ⛳ Ronda en curso — toca aquí para regresar
           </button>
         )}
+        {/* Group code — compact bar in header */}
+        <div className="mt-2 flex items-center gap-2">
+          <span className="text-emerald-200 text-xs font-body">Código de grupo:</span>
+          <input
+            value={groupCode}
+            onChange={(e) => persist({ groupCode: e.target.value.toUpperCase() })}
+            placeholder="Ej. QUERETARO"
+            className="flex-1 px-2 py-1 rounded-md text-xs font-mono bg-emerald-900/60 border border-emerald-700 text-emerald-100 placeholder-emerald-600 uppercase"
+          />
+          <button
+            onClick={() => syncFromGroup(groupCode, rounds, (synced) => persist({ rounds: synced }))}
+            disabled={!groupCode || syncing}
+            className="px-2 py-1 rounded-md bg-emerald-700 text-emerald-100 text-xs font-body disabled:opacity-40"
+          >
+            {syncing ? "…" : "Sincronizar"}
+          </button>
+        </div>
       </header>
 
       <main className="p-4 max-w-3xl mx-auto pb-16">
@@ -339,9 +400,25 @@ export default function ScoreKeeper() {
             onActiveRoundChange={setHasActiveRound}
           />
         </div>
-        {tab === "historial" && <HistoryTab rounds={rounds} onDelete={(id) => persist({ rounds: rounds.filter((r) => r.id !== id) })} />}
+        {tab === "historial" && (
+          <HistoryTab
+            rounds={rounds}
+            onDelete={(id) => persist({ rounds: rounds.filter((r) => r.id !== id) })}
+            groupCode={groupCode}
+            syncing={syncing}
+            onSync={() => syncFromGroup(groupCode, rounds, (synced) => persist({ rounds: synced }))}
+          />
+        )}
         {tab === "compartida" && (
-          <SharedRoundTab players={players} courses={courses} percentages={percentages} onSaveRound={(r) => persist({ rounds: [r, ...rounds] })} />
+          <SharedRoundTab
+            players={players}
+            courses={courses}
+            percentages={percentages}
+            onSaveRound={(r) => persist({ rounds: [r, ...rounds] })}
+            groupCode={groupCode}
+            onSetGroupCode={(code) => persist({ groupCode: code })}
+            onSyncGroup={() => syncFromGroup(groupCode, rounds, (synced) => persist({ rounds: synced }))}
+          />
         )}
         {tab === "acumulado" && <StandingsTab rounds={rounds} />}
         {tab === "mystats" && <MyStatsTab rounds={rounds} />}
@@ -565,7 +642,7 @@ function NewRoundTab({ players, courses, percentages, onSaveCourses, onSavePerce
 
   // Load draft on first mount
   useEffect(() => {
-    storageGet(ROUND_DRAFT_KEY).then((r) => {
+    window.storage.get(ROUND_DRAFT_KEY).then((r) => {
       if (r?.value) {
         try {
           const d = JSON.parse(r.value);
@@ -594,7 +671,7 @@ function NewRoundTab({ players, courses, percentages, onSaveCourses, onSavePerce
     if (!draftLoaded) return;
     clearTimeout(draftTimer.current);
     draftTimer.current = setTimeout(() => {
-      storageSet(ROUND_DRAFT_KEY, JSON.stringify({ date, courseId, salida, selected, handicaps, roundHcpPct, scores, playerStats, statsConfig, bet, pct, oyeEntries, matches }));
+      window.storage.set(ROUND_DRAFT_KEY, JSON.stringify({ date, courseId, salida, selected, handicaps, roundHcpPct, scores, playerStats, statsConfig, bet, pct, oyeEntries, matches }));
     }, 800);
   }, [date, courseId, salida, selected, handicaps, roundHcpPct, scores, playerStats, statsConfig, bet, pct, oyeEntries, matches, draftLoaded]);
 
@@ -721,7 +798,7 @@ function NewRoundTab({ players, courses, percentages, onSaveCourses, onSavePerce
     };
     onSaveRound(round);
     onSavePercentages(pct);
-    storageSet(ROUND_DRAFT_KEY, JSON.stringify({}));
+    window.storage.set(ROUND_DRAFT_KEY, JSON.stringify({}));
     setSelected([]);
     setScores({});
     setHandicaps({});
@@ -740,7 +817,7 @@ function NewRoundTab({ players, courses, percentages, onSaveCourses, onSavePerce
           <div className="flex items-center justify-between bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 -mt-1">
             <p className="text-xs font-body text-amber-800">📋 Ronda en curso — tus datos se guardan automáticamente. Puedes cambiar de pestaña y regresar cuando quieras.</p>
             <button onClick={() => {
-              storageSet(ROUND_DRAFT_KEY, JSON.stringify({}));
+              window.storage.set(ROUND_DRAFT_KEY, JSON.stringify({}));
               setSelected([]); setScores({}); setHandicaps({}); setPlayerStats({}); setStatsConfig({});
               setOyeEntries([]); setMatches([]); setResult(null);
             }} className="ml-2 text-xs font-body text-rose-700 underline whitespace-nowrap">Descartar ronda</button>
@@ -901,7 +978,7 @@ function NewRoundTab({ players, courses, percentages, onSaveCourses, onSavePerce
 }
 
 // ---------- Shared Round Tab (2 groups, live via shared storage + round code) ----------
-function SharedRoundTab({ players, courses, percentages, onSaveRound }) {
+function SharedRoundTab({ players, courses, percentages, onSaveRound, groupCode = '', onSetGroupCode = () => {}, onSyncGroup = () => {} }) {
   const [stage, setStage] = useState("start"); // start | create | join | active
   const [code, setCode] = useState("");
   const [joinCodeInput, setJoinCodeInput] = useState("");
@@ -913,6 +990,17 @@ function SharedRoundTab({ players, courses, percentages, onSaveRound }) {
   const [closedRound, setClosedRound] = useState(null);
   const [savedFromClosed, setSavedFromClosed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [viewCode, setViewCode] = useState("");
+  const [viewError, setViewError] = useState("");
+  const autoRefreshRef = useRef(null);
+
+  // Auto-refresh every 12 seconds when in active or view-only stage
+  useEffect(() => {
+    if ((stage === "active" || stage === "viewOnly") && meta && code) {
+      autoRefreshRef.current = setInterval(() => refreshAll(meta, code), 12000);
+      return () => clearInterval(autoRefreshRef.current);
+    }
+  }, [stage, meta, code]);
   const [result, setResult] = useState(null);
   const saveTimers = useRef({});
 
@@ -1069,6 +1157,13 @@ function SharedRoundTab({ players, courses, percentages, onSaveRound }) {
     };
     onSaveRound(round);
     await sSet(sharedClosedKey(code), round);
+    // Push to group so all players can pull it from historial
+    if (groupCode) {
+      const listKey = `grp-${groupCode}-list`;
+      const existing = await sGet(listKey) || [];
+      if (!existing.includes(round.id)) await sSet(listKey, [...existing, round.id]);
+      await sSet(`grp-${groupCode}-rnd-${round.id}`, round);
+    }
     setClosedRound(round);
     setSavedFromClosed(true);
   };
@@ -1093,11 +1188,6 @@ function SharedRoundTab({ players, courses, percentages, onSaveRound }) {
   if (stage === "start") {
     return (
       <div className="space-y-4">
-        {!firebaseEnabled && (
-          <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 text-xs font-body text-amber-800">
-            ⚠️ La función "2 Grupos" requiere Firebase. Sigue las instrucciones en <b>src/firebase.js</b> para activarla.
-          </div>
-        )}
         <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10">
           <h2 className="font-display text-lg text-emerald-900 mb-2">Ronda con 2 grupos</h2>
           <p className="text-sm text-stone-600 font-body mb-3">Un grupo va adelante del otro en la cancha. Cada encargado captura solo los scores de su grupo desde su celular, y la apuesta se calcula sobre todos juntos.</p>
@@ -1139,7 +1229,14 @@ function SharedRoundTab({ players, courses, percentages, onSaveRound }) {
             Grupo B: {meta.groupB.map((p) => p.name).join(", ")}
           </label>
         </div>
-        <button onClick={confirmJoin} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Confirmar y entrar</button>
+        <button onClick={confirmJoin} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Confirmar y capturar</button>
+        <button onClick={async () => {
+          await refreshAll(meta, code);
+          setMyGroup(null);
+          setStage("viewOnly");
+        }} className="px-4 py-2 rounded-lg bg-stone-200 text-stone-700 font-body font-semibold">
+          Solo ver en tiempo real 👁
+        </button>
       </section>
     );
   }
@@ -1217,6 +1314,37 @@ function SharedRoundTab({ players, courses, percentages, onSaveRound }) {
           <button onClick={createRound} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Crear y compartir código</button>
           <button onClick={() => setStage("start")} className="px-4 py-2 rounded-lg bg-stone-200 text-stone-700 font-body">Cancelar</button>
         </div>
+      </div>
+    );
+  }
+
+  // ----- stage === viewOnly (read-only, auto-refreshes) -----
+  if (stage === "viewOnly" && meta) {
+    const allPlayers = [...meta.groupA, ...meta.groupB];
+    const par3Holes = meta.pars.map((p, i) => Number(p) === 3 ? i + 1 : null).filter(Boolean);
+    return (
+      <div className="space-y-4">
+        <section className="bg-emerald-950 text-amber-50 rounded-xl p-4 flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <p className="font-display text-lg">Ronda en vivo · Código: <span className="tracking-widest">{code}</span></p>
+            <p className="font-body text-xs text-emerald-200">{meta.courseName} · {meta.date} · Se actualiza automáticamente cada 12 s</p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => refreshAll(meta, code)} className="px-3 py-1.5 rounded-md bg-amber-500 text-emerald-950 font-body text-sm font-semibold">{refreshing ? "…" : "Actualizar ahora"}</button>
+            <button onClick={exit} className="px-3 py-1.5 rounded-md bg-emerald-900/60 text-emerald-100 font-body text-sm">Salir</button>
+          </div>
+        </section>
+        {closedRound && (
+          <section className="bg-amber-50 border border-amber-400 rounded-xl p-3 font-body text-sm">
+            Esta ronda ya cerró.{" "}
+            <button onClick={() => { onSaveRound({ ...closedRound, id: uid() }); }} className="text-emerald-800 underline ml-1">Agregar a mi historial</button>
+          </section>
+        )}
+        <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10 overflow-x-auto space-y-5">
+          <HalfScorecard title="Hoyos 1 a 9" holeNumbers={[1,2,3,4,5,6,7,8,9]} selectedIds={allPlayers.map(p=>p.id)} players={allPlayers} scores={scores} setScore={() => {}} handicaps={Object.fromEntries(allPlayers.map(p=>[p.id,p.handicap]))} roundHcpPct={meta.roundHcpPct} pars={meta.pars} siArr={meta.si} readOnlyIds={allPlayers.map(p=>p.id)} />
+          <HalfScorecard title="Hoyos 10 a 18" holeNumbers={[10,11,12,13,14,15,16,17,18]} selectedIds={allPlayers.map(p=>p.id)} players={allPlayers} scores={scores} setScore={() => {}} handicaps={Object.fromEntries(allPlayers.map(p=>[p.id,p.handicap]))} roundHcpPct={meta.roundHcpPct} pars={meta.pars} siArr={meta.si} readOnlyIds={allPlayers.map(p=>p.id)} />
+          <AccumulatedScorecard selectedIds={allPlayers.map(p=>p.id)} players={allPlayers} scores={scores} handicaps={Object.fromEntries(allPlayers.map(p=>[p.id,p.handicap]))} roundHcpPct={meta.roundHcpPct} pars={meta.pars} siArr={meta.si} />
+        </section>
       </div>
     );
   }
@@ -1862,39 +1990,63 @@ function ScorecardSummary({ participants, pars, siArr, v1, v2 }) {
   );
 }
 
-function HistoryTab({ rounds, onDelete }) {
+function HistoryTab({ rounds, onDelete, groupCode, syncing, onSync }) {
   const [openId, setOpenId] = useState(null);
-  if (rounds.length === 0) return <p className="text-stone-500 font-body text-sm">Todavía no hay rondas guardadas.</p>;
   return (
     <div className="space-y-3">
-      {rounds.map((r) => (
-        <div key={r.id} className="bg-white/70 rounded-xl border border-emerald-900/10 overflow-hidden">
-          <button onClick={() => setOpenId(openId === r.id ? null : r.id)} className="w-full flex justify-between items-center px-4 py-3 text-left">
-            <div>
-              <p className="font-display text-emerald-900">{r.date} · {r.courseName}</p>
-              <p className="font-body text-xs text-stone-500">{r.participants.length} jugadores · Apuesta ${r.bet} c/u · Salida hoyo {r.salida}</p>
-            </div>
-            <span className="font-body text-sm text-emerald-700">{openId === r.id ? "Ocultar" : "Ver"}</span>
+      {groupCode && (
+        <div className="flex items-center justify-between bg-white/70 rounded-xl border border-emerald-900/10 px-4 py-2">
+          <p className="font-body text-sm text-stone-600">Grupo: <b className="font-mono">{groupCode}</b></p>
+          <button onClick={onSync} disabled={syncing} className="px-3 py-1 rounded-lg bg-emerald-800 text-amber-50 text-xs font-body disabled:opacity-50">
+            {syncing ? "Sincronizando…" : "⟳ Sincronizar con el grupo"}
           </button>
-          {openId === r.id && (
-            <div className="px-4 pb-4 space-y-3">
-              <ScorecardSummary participants={r.participants} pars={r.pars} siArr={r.si} v1={r.v1} v2={r.v2} />
-              <div className="font-mono text-sm space-y-1">
-                {r.participants
-                  .sort((a, b) => a.netMedal - b.netMedal)
-                  .map((p) => (
-                    <div key={p.playerId} className="flex justify-between border-t border-stone-200 pt-1">
-                      <span className="font-body">{p.name}</span>
-                      <span>HCP {p.rawHandicap ?? p.handicap}{p.pctHcp != null && p.pctHcp !== 100 ? ` (${p.pctHcp}%→${p.handicap})` : ""}</span>
-                      <Money value={r.settlement[p.playerId]?.total} />
-                    </div>
-                  ))}
-              </div>
-              <button onClick={() => onDelete(r.id)} className="text-rose-700 font-body text-xs underline">Eliminar ronda</button>
-            </div>
-          )}
         </div>
-      ))}
+      )}
+      {rounds.length === 0 && (
+        <div className="bg-white/70 rounded-xl p-6 border border-emerald-900/10 text-center">
+          <p className="text-stone-500 font-body text-sm mb-1">Aún no hay rondas guardadas.</p>
+          <p className="text-stone-400 font-body text-xs">Cuando calcules y guardes una ronda en "Nueva ronda", aparecerá aquí.</p>
+        </div>
+      )}
+      {rounds.map((r) => {
+        const participants = r.participants || [];
+        const settlement = r.settlement || {};
+        const isOpen = openId === r.id;
+        return (
+          <div key={r.id} className="bg-white/70 rounded-xl border border-emerald-900/10 overflow-hidden">
+            <button onClick={() => setOpenId(isOpen ? null : r.id)} className="w-full flex justify-between items-center px-4 py-3 text-left">
+              <div>
+                <p className="font-display text-emerald-900">{r.date} · {r.courseName || "Sin campo"}</p>
+                <p className="font-body text-xs text-stone-500">
+                  {participants.length} jugadores · ${r.bet || 0}/persona · Salida hoyo {r.salida || 1}
+                  {r.sharedCode && <span className="ml-2 text-emerald-600">· Ronda compartida</span>}
+                </p>
+              </div>
+              <span className="font-body text-sm text-emerald-700">{isOpen ? "Cerrar ▲" : "Ver ▼"}</span>
+            </button>
+            {isOpen && (
+              <div className="px-4 pb-4 space-y-3">
+                {r.pars && r.si && r.v1 && r.v2 && (
+                  <ScorecardSummary participants={participants} pars={r.pars} siArr={r.si} v1={r.v1} v2={r.v2} />
+                )}
+                <div className="font-mono text-sm space-y-1">
+                  {[...participants]
+                    .sort((a, b) => (a.netMedal || 0) - (b.netMedal || 0))
+                    .map((p) => (
+                      <div key={p.playerId} className="flex justify-between border-t border-stone-200 pt-1 flex-wrap gap-1">
+                        <span className="font-body font-semibold">{p.name}</span>
+                        <span className="text-stone-500 text-xs">HCP {p.rawHandicap ?? p.handicap}</span>
+                        <span>Net {p.netMedal} · {p.stablefordPoints} pts</span>
+                        <Money value={settlement[p.playerId]?.total} />
+                      </div>
+                    ))}
+                </div>
+                <button onClick={() => onDelete(r.id)} className="text-rose-700 font-body text-xs underline">Eliminar ronda</button>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
