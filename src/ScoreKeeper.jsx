@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import { storageGet, storageSet, sharedGet, sharedSet, firebaseEnabled } from "./storage";
 
 // ---------- Constants ----------
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -180,14 +181,14 @@ function settleOyes(participants, bet, pctFront, pctBack, entries, v1, v2) {
 // ---------- Storage ----------
 async function loadData() {
   try {
-    const r = await window.storage.get("scorekeeper-data");
+    const r = await storageGet("scorekeeper-data");
     if (r && r.value) return JSON.parse(r.value);
   } catch (e) {}
   return { players: [], rounds: [], courses: [], percentages: DEFAULT_PCT };
 }
 async function saveData(data) {
   try {
-    await window.storage.set("scorekeeper-data", JSON.stringify(data));
+    await storageSet("scorekeeper-data", JSON.stringify(data));
   } catch (e) {
     console.error("Storage error", e);
   }
@@ -196,7 +197,7 @@ async function saveData(data) {
 // ---------- Shared round storage (for 2-group collaborative rounds) ----------
 async function sGet(key) {
   try {
-    const r = await window.storage.get(key, true);
+    const r = await sharedGet(key);
     return r && r.value ? JSON.parse(r.value) : null;
   } catch (e) {
     return null;
@@ -204,7 +205,7 @@ async function sGet(key) {
 }
 async function sSet(key, value) {
   try {
-    await window.storage.set(key, JSON.stringify(value), true);
+    await sharedSet(key, JSON.stringify(value));
   } catch (e) {
     console.error("Shared storage error", e);
   }
@@ -642,7 +643,7 @@ function NewRoundTab({ players, courses, percentages, onSaveCourses, onSavePerce
 
   // Load draft on first mount
   useEffect(() => {
-    window.storage.get(ROUND_DRAFT_KEY).then((r) => {
+    storageGet(ROUND_DRAFT_KEY).then((r) => {
       if (r?.value) {
         try {
           const d = JSON.parse(r.value);
@@ -671,7 +672,7 @@ function NewRoundTab({ players, courses, percentages, onSaveCourses, onSavePerce
     if (!draftLoaded) return;
     clearTimeout(draftTimer.current);
     draftTimer.current = setTimeout(() => {
-      window.storage.set(ROUND_DRAFT_KEY, JSON.stringify({ date, courseId, salida, selected, handicaps, roundHcpPct, scores, playerStats, statsConfig, bet, pct, oyeEntries, matches }));
+      storageSet(ROUND_DRAFT_KEY, JSON.stringify({ date, courseId, salida, selected, handicaps, roundHcpPct, scores, playerStats, statsConfig, bet, pct, oyeEntries, matches }));
     }, 800);
   }, [date, courseId, salida, selected, handicaps, roundHcpPct, scores, playerStats, statsConfig, bet, pct, oyeEntries, matches, draftLoaded]);
 
@@ -798,7 +799,7 @@ function NewRoundTab({ players, courses, percentages, onSaveCourses, onSavePerce
     };
     onSaveRound(round);
     onSavePercentages(pct);
-    window.storage.set(ROUND_DRAFT_KEY, JSON.stringify({}));
+    storageSet(ROUND_DRAFT_KEY, JSON.stringify({}));
     setSelected([]);
     setScores({});
     setHandicaps({});
@@ -817,7 +818,7 @@ function NewRoundTab({ players, courses, percentages, onSaveCourses, onSavePerce
           <div className="flex items-center justify-between bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 -mt-1">
             <p className="text-xs font-body text-amber-800">📋 Ronda en curso — tus datos se guardan automáticamente. Puedes cambiar de pestaña y regresar cuando quieras.</p>
             <button onClick={() => {
-              window.storage.set(ROUND_DRAFT_KEY, JSON.stringify({}));
+              storageSet(ROUND_DRAFT_KEY, JSON.stringify({}));
               setSelected([]); setScores({}); setHandicaps({}); setPlayerStats({}); setStatsConfig({});
               setOyeEntries([]); setMatches([]); setResult(null);
             }} className="ml-2 text-xs font-body text-rose-700 underline whitespace-nowrap">Descartar ronda</button>
