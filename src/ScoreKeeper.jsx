@@ -1407,8 +1407,83 @@ function LeaderDots({ id, medalLeaders, stfLeaders }) {
   );
 }
 
+function ScoreModal({ hole, par, playerName, value, onDone }) {
+  const [val, setVal] = React.useState(String(value || ""));
+
+  React.useEffect(() => {
+    const onKey = (e) => {
+      if (e.key >= "1" && e.key <= "9") press(e.key);
+      else if (e.key === "0") press("0");
+      else if (e.key === "Backspace") setVal((v) => v.slice(0, -1));
+      else if (e.key === "Enter") onDone(val);
+      else if (e.key === "Escape") onDone(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [val]);
+
+  const press = (digit) => setVal((v) => (v.length >= 2 ? v : v + digit));
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.6)" }}
+      onClick={() => onDone(null)}
+    >
+      <div
+        className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-xs p-5 pb-8 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="text-center mb-4">
+          <p className="text-stone-500 font-body text-xs mb-0.5">{playerName}</p>
+          <p className="font-display text-emerald-900 text-base">Hoyo {hole} · Par {par}</p>
+          <div className="mt-3 h-16 flex items-center justify-center">
+            <span className="font-mono font-bold text-emerald-900 leading-none" style={{ fontSize: "4rem" }}>
+              {val !== "" ? val : <span style={{ color: "#d1d5db" }}>–</span>}
+            </span>
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
+            <button
+              key={n}
+              onClick={() => press(String(n))}
+              style={{ touchAction: "manipulation" }}
+              className="h-14 rounded-xl bg-stone-100 text-stone-800 font-body font-semibold text-2xl hover:bg-stone-200 active:scale-95 transition-transform"
+            >
+              {n}
+            </button>
+          ))}
+          <button
+            onClick={() => setVal((v) => v.slice(0, -1))}
+            style={{ touchAction: "manipulation" }}
+            className="h-14 rounded-xl bg-stone-200 text-stone-700 font-body font-semibold text-lg hover:bg-stone-300 active:scale-95 transition-transform"
+          >
+            ⌫
+          </button>
+          <button
+            onClick={() => press("0")}
+            style={{ touchAction: "manipulation" }}
+            className="h-14 rounded-xl bg-stone-100 text-stone-800 font-body font-semibold text-2xl hover:bg-stone-200 active:scale-95 transition-transform"
+          >
+            0
+          </button>
+          <button
+            onClick={() => onDone(val)}
+            style={{ touchAction: "manipulation" }}
+            className="h-14 rounded-xl bg-emerald-800 text-amber-50 font-body font-semibold text-lg hover:bg-emerald-700 active:scale-95 transition-transform"
+          >
+            OK
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function HalfScorecard({ title, holeNumbers, selectedIds, players, scores, setScore, handicaps, roundHcpPct, pars, siArr, readOnlyIds = [], playerStats = {}, setStatForPlayer = () => {}, statsConfig = {}, toggleStatConfig = () => {} }) {
   const inputRefs = useRef({});
+  const [editing, setEditing] = React.useState(null);
   const STAT_FIELDS = ["fw", "ob", "lago", "putts"];
   const STAT_LABELS = { fw: "FW/Green", ob: "OB", lago: "Lago", putts: "Putts" };
 
@@ -1491,19 +1566,27 @@ function HalfScorecard({ title, holeNumbers, selectedIds, players, scores, setSc
                     <LeaderDots id={r.id} medalLeaders={medalLeaders} stfLeaders={stfLeaders} />
                   </td>
                   <td className="px-1 py-1 text-center font-semibold">{r.playingHcp}</td>
-                  {holeNumbers.map((h) => (
-                    <td key={h} className="px-0.5 py-1">
-                      <input
-                        ref={(el) => (inputRefs.current[`score_${h}_${rowIdx}`] = el)}
-                        value={r.holeScores[h - 1] ?? ""}
-                        onChange={(e) => setScore(r.id, h - 1, e.target.value)}
-                        onKeyDown={(e) => handleKeyDown(e, h, rowIdx)}
-                        type="number"
-                        disabled={readOnly}
-                        className={`w-8 h-7 text-center ${readOnly ? "bg-stone-100 text-stone-400 border border-stone-200 rounded cursor-not-allowed" : holeMarkClass(Number(r.holeScores[h - 1]) || 0, pars[h - 1])}`}
-                      />
-                    </td>
-                  ))}
+                  {holeNumbers.map((h) => {
+                    const sc = r.holeScores[h - 1];
+                    return (
+                      <td key={h} className="px-0.5 py-0.5">
+                        {readOnly ? (
+                          <div className="w-9 h-10 flex items-center justify-center font-mono text-sm border border-stone-200 rounded bg-stone-50 text-stone-400">
+                            {sc || ""}
+                          </div>
+                        ) : (
+                          <button
+                            ref={(el) => (inputRefs.current[`score_${h}_${rowIdx}`] = el)}
+                            onClick={() => setEditing({ id: r.id, h, name: r.name, par: pars[h - 1], value: sc ?? "" })}
+                            style={{ touchAction: "manipulation" }}
+                            className={`w-9 h-10 flex items-center justify-center font-mono text-sm cursor-pointer ${holeMarkClass(Number(sc) || 0, pars[h - 1])}`}
+                          >
+                            {sc || ""}
+                          </button>
+                        )}
+                      </td>
+                    );
+                  })}
                   <td className="px-1 py-1 text-center border-l border-stone-200 font-semibold">{r.holesPlayed ? r.gross : "–"}</td>
                   <td className="px-1 py-1 text-center">{r.holesPlayed ? r.hc : "–"}</td>
                   <td className="px-1 py-1 text-center font-semibold">{r.holesPlayed ? r.net : "–"}</td>
@@ -1588,6 +1671,25 @@ function HalfScorecard({ title, holeNumbers, selectedIds, players, scores, setSc
         <span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-500 align-middle mr-1 ml-2" />líder Stableford
       </p>
       <p className="text-xs text-stone-400 font-body mt-0.5">Stats: activa los campos que quieras registrar para cada jugador (desactivados por defecto).</p>
+      {editing && (
+        <ScoreModal
+          hole={editing.h}
+          par={editing.par}
+          playerName={editing.name}
+          value={editing.value}
+          onDone={(val) => {
+            if (val !== null) {
+              setScore(editing.id, editing.h - 1, val);
+              const nextH = editing.h + 1;
+              if (holeNumbers.includes(nextH)) {
+                setEditing({ ...editing, h: nextH, par: pars[nextH - 1], value: scores[editing.id]?.[nextH - 1] ?? "" });
+                return;
+              }
+            }
+            setEditing(null);
+          }}
+        />
+      )}
     </div>
   );
 }
