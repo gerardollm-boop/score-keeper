@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { storageGet, storageSet, sharedGet, sharedSet, firebaseEnabled } from "./storage";
+import { auth } from "./firebase";
+import { onAuthStateChanged } from "firebase/auth";
 
 // ---------- Constants ----------
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -247,6 +249,25 @@ export default function ScoreKeeper() {
   const [syncing, setSyncing] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
+  // Stable per-device identity — resolved from localStorage immediately,
+  // upgraded to Firebase anonymous UID on first open if not yet set.
+  const [myUserId, setMyUserId] = useState(() => localStorage.getItem("sk_myUserId") || "");
+  useEffect(() => {
+    if (localStorage.getItem("sk_myUserId")) return; // already stable, nothing to do
+    if (auth) {
+      const unsub = onAuthStateChanged(auth, (user) => {
+        if (!user) return;
+        localStorage.setItem("sk_myUserId", user.uid);
+        setMyUserId(user.uid);
+      });
+      return unsub;
+    } else {
+      const id = uid();
+      localStorage.setItem("sk_myUserId", id);
+      setMyUserId(id);
+    }
+  }, []);
+
   useEffect(() => {
     loadData().then((d) => {
       setPlayers(d.players || []);
@@ -387,7 +408,7 @@ export default function ScoreKeeper() {
       </header>
 
       <main className="p-4 max-w-3xl mx-auto pb-16">
-        {tab === "jugadores" && <PlayersTab players={players} onChange={(p) => persist({ players: p })} />}
+        {tab === "jugadores" && <PlayersTab players={players} onChange={(p) => persist({ players: p })} myUserId={myUserId} />}
         {tab === "campos" && <CoursesTab courses={courses} onChange={(c) => persist({ courses: c })} />}
         {/* NewRoundTab always stays mounted — only hidden — so round state is NEVER lost when switching tabs */}
         <div style={{ display: tab === "ronda" ? "block" : "none" }}>
@@ -429,13 +450,22 @@ export default function ScoreKeeper() {
 }
 
 // ---------- Players Tab ----------
-function PlayersTab({ players, onChange }) {
+function PlayersTab({ players, onChange, myUserId }) {
   const [name, setName] = useState("");
   const [hcp, setHcp] = useState("");
   const [ghin, setGhin] = useState("");
+  const [selfName, setSelfName] = useState("");
   const nameRef = useRef(null);
   const hcpRef = useRef(null);
   const ghinRef = useRef(null);
+
+  const isMeInRoster = myUserId && players.some((p) => p.id === myUserId);
+
+  const addSelf = () => {
+    if (!selfName.trim() || !myUserId) return;
+    onChange([...players, { id: myUserId, name: selfName.trim(), handicap: 0, ghin: "" }]);
+    setSelfName("");
+  };
 
   const add = () => {
     if (!name.trim()) return;
@@ -458,6 +488,23 @@ function PlayersTab({ players, onChange }) {
 
   return (
     <div className="space-y-4">
+      {myUserId && !isMeInRoster && (
+        <section className="bg-amber-50 rounded-xl p-4 border border-amber-400">
+          <h2 className="font-display text-lg text-emerald-900 mb-1">¿Quién eres tú?</h2>
+          <p className="text-sm text-stone-600 font-body mb-3">Agrégate al roster con tu nombre. Tu historial y stats quedarán vinculados a este dispositivo.</p>
+          <div className="flex gap-2">
+            <input
+              value={selfName}
+              onChange={(e) => setSelfName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addSelf()}
+              placeholder="Tu nombre"
+              className="flex-1 px-3 py-2 rounded-lg border border-amber-400 font-body bg-white"
+              autoFocus
+            />
+            <button onClick={addSelf} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Soy yo</button>
+          </div>
+        </section>
+      )}
       <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10">
         <h2 className="font-display text-lg text-emerald-900 mb-3">Agregar jugador</h2>
         <div className="flex gap-2 flex-wrap">
@@ -470,8 +517,9 @@ function PlayersTab({ players, onChange }) {
       <section className="space-y-2">
         {players.length === 0 && <p className="text-stone-500 font-body text-sm">Aún no hay jugadores en el roster.</p>}
         {players.map((p) => (
-          <div key={p.id} className="bg-white/70 rounded-xl p-3 border border-emerald-900/10 flex items-center gap-3 flex-wrap">
+          <div key={p.id} className={`rounded-xl p-3 border flex items-center gap-3 flex-wrap ${p.id === myUserId ? "bg-amber-50 border-amber-400" : "bg-white/70 border-emerald-900/10"}`}>
             <input value={p.name} onChange={(e) => update(p.id, "name", e.target.value)} className="flex-1 min-w-[100px] font-body bg-transparent border-b border-transparent focus:border-emerald-700 outline-none" />
+            {p.id === myUserId && <span className="text-xs font-body text-amber-700 font-semibold">tú</span>}
             <div className="flex items-center gap-1 text-sm text-stone-500 font-body">
               <span>HCP</span>
               <input value={p.handicap} onChange={(e) => update(p.id, "handicap", e.target.value)} type="number" className="w-16 px-2 py-1 rounded-md border border-stone-300 font-mono text-right" />

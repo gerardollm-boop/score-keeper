@@ -10,6 +10,7 @@
 
 import { initializeApp } from "firebase/app";
 import { getDatabase } from "firebase/database";
+import { getAuth, signInAnonymously } from "firebase/auth";
 
 const firebaseConfig = {
   apiKey:            "AIzaSyCMRprV5uoj6esP8LMnv9MOJS64zmwEMcA",
@@ -25,13 +26,16 @@ const firebaseConfig = {
 // Si no has configurado Firebase, la app funciona igual
 // (solo la función "2 Grupos" requiere Firebase)
 let db = null;
+let auth = null;
 try {
   if (firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith("PEGA_AQUI")) {
     const app = initializeApp(firebaseConfig);
     db = getDatabase(app);
+    auth = getAuth(app);
+    signInAnonymously(auth).catch(() => {});
   }
 } catch (e) {
   console.warn("Firebase no configurado — la función 2 Grupos estará deshabilitada.");
 }
 
-export { db };
+export { db, auth };
