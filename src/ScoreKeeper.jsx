@@ -187,7 +187,7 @@ function computeLeaderboardEntry(userId, userName, rounds) {
     if (!p) continue;
     totalGross += p.grossTotal || 0;
     totalNet += p.netMedal || 0;
-    if ((p.netMedal || 0) < bestNet) bestNet = p.netMedal;
+    if ((p.netMedal || 0) < bestNet) bestNet = p.netMedal || 0;
     if (r.winners?.medalOverall?.includes(userId)) medalWins++;
     if (r.winners?.stablefordOverall?.includes(userId)) stablefordWins++;
     if (r.winners?.oyeFront?.includes(userId) || r.winners?.oyeBack?.includes(userId)) oyeWins++;
@@ -326,16 +326,16 @@ export default function ScoreKeeper() {
   useEffect(() => {
     if (!myUserId || !firebaseEnabled) return;
     roundsGet(myUserId).then((fbRounds) => {
-      if (fbRounds.length > 0) {
-        setRounds(fbRounds);
-      } else {
-        // One-time migration: push existing localStorage rounds to Firebase
-        loadData().then((d) => {
-          if (d.rounds?.length > 0) {
-            d.rounds.forEach((r) => roundSave(myUserId, r));
-          }
-        });
-      }
+      loadData().then((d) => {
+        const localRounds = d.rounds || [];
+        const fbIds = new Set(fbRounds.map((r) => r.id));
+        const missing = localRounds.filter((r) => !fbIds.has(r.id));
+        missing.forEach((r) => roundSave(myUserId, r));
+        const merged = [...fbRounds, ...missing].sort((a, b) =>
+          (b.date || "").localeCompare(a.date || "")
+        );
+        if (merged.length > 0) setRounds(merged);
+      });
     });
   }, [myUserId]);
 
