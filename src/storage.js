@@ -3,7 +3,7 @@
 // Reemplaza la API window.storage del entorno de Claude
 // ─────────────────────────────────────────────────────────
 import { db } from "./firebase";
-import { ref, get, set } from "firebase/database";
+import { ref, get, set, update } from "firebase/database";
 
 const PREFIX = "sk_";
 
@@ -84,9 +84,6 @@ export async function userGet(userId) {
 
 export async function userUpdate(userId, fields) {
   if (!db) return;
-  try {
-    const snap = await get(ref(db, `scorekeeper/users/${userId}`));
-    const current = snap.exists() ? snap.val() : {};
-    await set(ref(db, `scorekeeper/users/${userId}`), { ...current, ...fields });
-  } catch (e) {}
+  try { await update(ref(db, `scorekeeper/users/${userId}`), fields); }
+  catch (e) {}
 }

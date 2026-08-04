@@ -459,7 +459,6 @@ export default function ScoreKeeper() {
             myProfile={myProfile}
             courses={courses}
             percentages={percentages}
-            onSaveCourses={(c) => persist({ courses: c })}
             onSavePercentages={(p) => persist({ percentages: p })}
             onSaveRound={(r) => persist({ rounds: [r, ...rounds] })}
             onActiveRoundChange={setHasActiveRound}
@@ -701,7 +700,7 @@ function PercentagesEditor({ percentages, setPercentages }) {
 }
 
 // ---------- Round Tab (unified create / join / live round) ----------
-function RoundTab({ myUserId, myProfile, courses, percentages, onSaveCourses, onSavePercentages, onSaveRound, onActiveRoundChange = () => {}, groupCode = "" }) {
+function RoundTab({ myUserId, myProfile, courses, percentages, onSavePercentages, onSaveRound, onActiveRoundChange = () => {}, groupCode = "" }) {
   const [stage, setStage] = useState("home"); // home | create | waiting | active | viewOnly | join | joinConfirm
   const [code, setCode] = useState("");
   const [meta, setMeta] = useState(null);
@@ -753,6 +752,9 @@ function RoundTab({ myUserId, myProfile, courses, percentages, onSaveCourses, on
     if (!courseId && courses[0]) setCourseId(courses[0].id);
   }, [courses]);
 
+  useEffect(() => { setPct(percentages); }, [percentages]);
+  useEffect(() => { if (myProfile?.handicap != null) { setMyHcpForRound(myProfile.handicap); setJoinHcp(myProfile.handicap); } }, [myProfile]);
+
   const course = courses.find((c) => c.id === courseId);
   const isHost = meta?.createdBy === myUserId;
   const guestIds = (meta?.guests || []).map((g) => g.id);
@@ -768,13 +770,19 @@ function RoundTab({ myUserId, myProfile, courses, percentages, onSaveCourses, on
 
   const refreshAll = async (m, c) => {
     setRefreshing(true);
+    const freshMeta = (await sGet(sharedMetaKey(c))) || m;
+    setMeta(freshMeta);
     const pd = (await sGet(sharedParticipantsKey(c))) || {};
     setParticipants(pd);
-    const allIds = [...Object.keys(pd), ...(m.guests || []).map((g) => g.id)];
-    const entries = await Promise.all(allIds.map(async (id) => [id, (await sGet(sharedScoresKey(c, id))) || Array(18).fill("")]));
+    const allIds = [...Object.keys(pd), ...(freshMeta.guests || []).map((g) => g.id)];
+    const [entries, oyes, closed] = await Promise.all([
+      Promise.all(allIds.map(async (id) => [id, (await sGet(sharedScoresKey(c, id))) || Array(18).fill("")])),
+      sGet(sharedOyesKey(c)),
+      sGet(sharedClosedKey(c)),
+    ]);
     setScores(Object.fromEntries(entries));
-    setOyeEntries((await sGet(sharedOyesKey(c))) || []);
-    setClosedRound(await sGet(sharedClosedKey(c)));
+    setOyeEntries(oyes || []);
+    setClosedRound(closed);
     setRefreshing(false);
   };
 
@@ -795,6 +803,7 @@ function RoundTab({ myUserId, myProfile, courses, percentages, onSaveCourses, on
     setParticipants({ [myUserId]: myEntry });
     setScores({ [myUserId]: Array(18).fill("") });
     setOyeEntries([]);
+    onSavePercentages(pct);
     setStage("waiting");
   };
 
@@ -901,12 +910,6 @@ function RoundTab({ myUserId, myProfile, courses, percentages, onSaveCourses, on
     };
     onSaveRound(round);
     await sSet(sharedClosedKey(code), round);
-    if (groupCode) {
-      const listKey = `grp-${groupCode}-list`;
-      const existing = (await sGet(listKey)) || [];
-      if (!existing.includes(round.id)) await sSet(listKey, [...existing, round.id]);
-      await sSet(`grp-${groupCode}-rnd-${round.id}`, round);
-    }
     setClosedRound(round);
     setSavedFromClosed(true);
   };
@@ -1073,7 +1076,8 @@ function RoundTab({ myUserId, myProfile, courses, percentages, onSaveCourses, on
       {closedRound && (
         <section className="bg-amber-50 border border-amber-400 rounded-xl p-3 font-body text-sm">
           Esta ronda ya cerró.{" "}
-          <button onClick={() => { onSaveRound({ ...closedRound, id: uid() }); }} className="text-emerald-800 underline ml-1">Agregar a mi historial</button>
+          {!savedFromClosed && <button onClick={addClosedToHistory} className="text-emerald-800 underline ml-1">Agregar a mi historial</button>}
+          {savedFromClosed && <span className="text-emerald-700 ml-1">Agregada ✓</span>}
         </section>
       )}
       <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10 overflow-x-auto space-y-5">
