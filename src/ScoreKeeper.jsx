@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { storageGet, storageSet, sharedGet, sharedSet, firebaseEnabled, userCreate, userExists, usersGetAll } from "./storage";
+import { storageGet, storageSet, sharedGet, sharedSet, firebaseEnabled, userCreate, userExists, usersGetAll, userGet, userUpdate } from "./storage";
 
 // ---------- Constants ----------
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -184,7 +184,7 @@ async function loadData() {
     const r = await storageGet("scorekeeper-data");
     if (r && r.value) return JSON.parse(r.value);
   } catch (e) {}
-  return { players: [], rounds: [], courses: [], percentages: DEFAULT_PCT };
+  return { rounds: [], courses: [], percentages: DEFAULT_PCT };
 }
 async function saveData(data) {
   try {
@@ -214,6 +214,7 @@ const sharedMetaKey = (code) => `sk-meta-${code}`;
 const sharedScoresKey = (code, playerId) => `sk-scores-${code}-${playerId}`;
 const sharedOyesKey = (code) => `sk-oyes-${code}`;
 const sharedClosedKey = (code) => `sk-closed-${code}`;
+const sharedParticipantsKey = (code) => `sk-participants-${code}`;
 function makeRoundCode() {
   return uid().slice(0, 5).toUpperCase();
 }
@@ -239,13 +240,14 @@ const Badge = ({ children, tone = "gold" }) => {
 export default function ScoreKeeper() {
   const [tab, setTab] = useState("ronda");
   const [hasActiveRound, setHasActiveRound] = useState(false);
-  const [players, setPlayers] = useState([]);
   const [rounds, setRounds] = useState([]);
   const [courses, setCourses] = useState([]);
   const [percentages, setPercentages] = useState(DEFAULT_PCT);
   const [groupCode, setGroupCode] = useState("");
   const [syncing, setSyncing] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [myProfile, setMyProfile] = useState(null);
+  const [showProfile, setShowProfile] = useState(false);
 
   // Phase 2 identity: Firebase profile + PIN. Falls back to local uid if Firebase unavailable.
   const [myUserId, setMyUserId] = useState("");
@@ -264,10 +266,9 @@ export default function ScoreKeeper() {
     if (!stored) { setAuthChecked(true); return; } // no id → show LoginScreen
     userExists(stored).then((exists) => {
       if (exists === true || exists === null) {
-        // found in Firebase, or network error — proceed optimistically
         setMyUserId(stored);
+        userGet(stored).then((p) => { if (p) setMyProfile(p); });
       } else {
-        // false: stale Phase-1 random id not in Firebase → force login
         localStorage.removeItem("sk_myUserId");
       }
       setAuthChecked(true);
@@ -275,19 +276,13 @@ export default function ScoreKeeper() {
   }, []);
 
   const handleLogin = (newUserId) => {
-    const oldId = localStorage.getItem("sk_myUserId");
     localStorage.setItem("sk_myUserId", newUserId);
     setMyUserId(newUserId);
-    // Migrate roster: if Phase 1 claimed a player with the old random id, repoint it
-    if (oldId && oldId !== newUserId) {
-      const updated = players.map((p) => p.id === oldId ? { ...p, id: newUserId } : p);
-      if (updated.some((p) => p.id === newUserId)) persist({ players: updated });
-    }
+    userGet(newUserId).then((p) => { if (p) setMyProfile(p); });
   };
 
   useEffect(() => {
     loadData().then((d) => {
-      setPlayers(d.players || []);
       setRounds(d.rounds || []);
       setCourses(d.courses || []);
       setPercentages(d.percentages || DEFAULT_PCT);
@@ -333,23 +328,32 @@ export default function ScoreKeeper() {
 
   const persist = (next) => {
     const data = {
-      players: next.players ?? players,
       rounds: next.rounds ?? rounds,
       courses: next.courses ?? courses,
       percentages: next.percentages ?? percentages,
       groupCode: next.groupCode ?? groupCode,
     };
-    if (next.players) setPlayers(next.players);
     if (next.rounds !== undefined) setRounds(next.rounds);
     if (next.courses) setCourses(next.courses);
     if (next.percentages) setPercentages(next.percentages);
     if (next.groupCode !== undefined) setGroupCode(next.groupCode);
     saveData(data);
-    // Push new round to group when a round is saved
-    if (next.rounds && next.rounds.length > (rounds.length)) {
-      const newRound = next.rounds[0];
-      pushRoundToGroup(newRound, next.groupCode ?? groupCode);
+    if (next.rounds && next.rounds.length > rounds.length) {
+      pushRoundToGroup(next.rounds[0], next.groupCode ?? groupCode);
     }
+  };
+
+  const logout = () => {
+    localStorage.removeItem("sk_myUserId");
+    setMyUserId("");
+    setMyProfile(null);
+    setShowProfile(false);
+  };
+
+  const updateMyProfile = async (fields) => {
+    const updated = { ...myProfile, ...fields };
+    setMyProfile(updated);
+    await userUpdate(myUserId, fields);
   };
 
   if (!loaded || !authChecked) {
@@ -380,13 +384,32 @@ export default function ScoreKeeper() {
             <h1 className="font-display text-2xl font-semibold uppercase">Score Keeper</h1>
             <p className="font-body text-xs text-emerald-200/80">Medal Net · Stableford · Oyes · Apuestas de grupo</p>
           </div>
-          <div className="w-11 h-11 rounded-full bg-amber-500 text-emerald-950 flex items-center justify-center font-display font-bold text-sm border-2 border-amber-300">⛳</div>
+          <div className="relative">
+            <button
+              onClick={() => setShowProfile((v) => !v)}
+              className="w-11 h-11 rounded-full bg-amber-500 text-emerald-950 flex items-center justify-center font-display font-bold text-sm border-2 border-amber-300 hover:bg-amber-400"
+            >
+              {myProfile?.name?.[0]?.toUpperCase() || "?"}
+            </button>
+            {showProfile && (
+              <div className="absolute right-0 mt-2 bg-white rounded-xl shadow-xl border border-stone-200 p-4 z-20 w-64 space-y-3">
+                <p className="font-display text-emerald-900 text-lg">{myProfile?.name}</p>
+                <label className="text-sm font-body text-stone-600 block">
+                  Hándicap
+                  <input type="number" value={myProfile?.handicap ?? ""} onChange={(e) => updateMyProfile({ handicap: Number(e.target.value) || 0 })} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-mono" />
+                </label>
+                <label className="text-sm font-body text-stone-600 block">
+                  GHIN
+                  <input value={myProfile?.ghin ?? ""} onChange={(e) => updateMyProfile({ ghin: e.target.value })} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-mono" />
+                </label>
+                <button onClick={logout} className="w-full px-3 py-2 rounded-lg bg-rose-50 text-rose-700 font-body text-sm font-semibold hover:bg-rose-100">Cerrar sesión</button>
+              </div>
+            )}
+          </div>
         </div>
         <nav className="flex gap-1 mt-4 font-body text-sm flex-wrap">
           {[
             ["ronda", "⛳ Ronda"],
-            ["compartida", "👥 2 Grupos"],
-            ["jugadores", "Jugadores"],
             ["campos", "Campos"],
             ["historial", "📋 Historial"],
             ["acumulado", "Acumulado"],
@@ -409,7 +432,6 @@ export default function ScoreKeeper() {
             ⛳ Ronda en curso — toca aquí para regresar
           </button>
         )}
-        {/* Group code — compact bar in header */}
         <div className="mt-2 flex items-center gap-2">
           <span className="text-emerald-200 text-xs font-body">Código de grupo:</span>
           <input
@@ -429,18 +451,19 @@ export default function ScoreKeeper() {
       </header>
 
       <main className="p-4 max-w-3xl mx-auto pb-16">
-        {tab === "jugadores" && <PlayersTab players={players} onChange={(p) => persist({ players: p })} myUserId={myUserId} />}
         {tab === "campos" && <CoursesTab courses={courses} onChange={(c) => persist({ courses: c })} />}
-        {/* NewRoundTab always stays mounted — only hidden — so round state is NEVER lost when switching tabs */}
+        {/* RoundTab stays mounted — round state is never lost when switching tabs */}
         <div style={{ display: tab === "ronda" ? "block" : "none" }}>
-          <NewRoundTab
-            players={players}
+          <RoundTab
+            myUserId={myUserId}
+            myProfile={myProfile}
             courses={courses}
             percentages={percentages}
             onSaveCourses={(c) => persist({ courses: c })}
             onSavePercentages={(p) => persist({ percentages: p })}
             onSaveRound={(r) => persist({ rounds: [r, ...rounds] })}
             onActiveRoundChange={setHasActiveRound}
+            groupCode={groupCode}
           />
         </div>
         {tab === "historial" && (
@@ -452,17 +475,6 @@ export default function ScoreKeeper() {
             onSync={() => syncFromGroup(groupCode, rounds, (synced) => persist({ rounds: synced }))}
           />
         )}
-        {tab === "compartida" && (
-          <SharedRoundTab
-            players={players}
-            courses={courses}
-            percentages={percentages}
-            onSaveRound={(r) => persist({ rounds: [r, ...rounds] })}
-            groupCode={groupCode}
-            onSetGroupCode={(code) => persist({ groupCode: code })}
-            onSyncGroup={() => syncFromGroup(groupCode, rounds, (synced) => persist({ rounds: synced }))}
-          />
-        )}
         {tab === "acumulado" && <StandingsTab rounds={rounds} />}
         {tab === "mystats" && <MyStatsTab rounds={rounds} />}
       </main>
@@ -470,7 +482,6 @@ export default function ScoreKeeper() {
   );
 }
 
-// ---------- Players Tab ----------
 // ---------- Login Screen (Phase 2 PIN auth) ----------
 function LoginScreen({ onLogin }) {
   const [mode, setMode] = useState("choose"); // choose | create | join
@@ -552,66 +563,6 @@ function LoginScreen({ onLogin }) {
         <button onClick={handleJoin} className={btnSecondary}>Entrar</button>
         <button onClick={() => { setMode("choose"); setError(""); }} className="w-full text-sm font-body text-stone-500 hover:underline">Volver</button>
       </div>
-    </div>
-  );
-}
-
-function PlayersTab({ players, onChange, myUserId }) {
-  const [name, setName] = useState("");
-  const [hcp, setHcp] = useState("");
-  const [ghin, setGhin] = useState("");
-  const nameRef = useRef(null);
-  const hcpRef = useRef(null);
-  const ghinRef = useRef(null);
-
-  const add = () => {
-    if (!name.trim()) return;
-    onChange([...players, { id: uid(), name: name.trim(), handicap: Number(hcp) || 0, ghin: ghin.trim() }]);
-    setName("");
-    setHcp("");
-    setGhin("");
-    setTimeout(() => nameRef.current?.focus(), 50);
-  };
-
-  const handleAddKey = (e, next) => {
-    if (e.key !== "Enter") return;
-    e.preventDefault();
-    if (next === "add") add();
-    else next?.current?.focus();
-  };
-
-  const update = (id, field, value) => onChange(players.map((p) => (p.id === id ? { ...p, [field]: field === "handicap" ? Number(value) || 0 : value } : p)));
-  const remove = (id) => onChange(players.filter((p) => p.id !== id));
-
-  return (
-    <div className="space-y-4">
-      <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10">
-        <h2 className="font-display text-lg text-emerald-900 mb-3">Agregar jugador</h2>
-        <div className="flex gap-2 flex-wrap">
-          <input ref={nameRef} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => handleAddKey(e, hcpRef)} placeholder="Nombre" className="flex-1 min-w-[140px] px-3 py-2 rounded-lg border border-stone-300 font-body bg-white" />
-          <input ref={hcpRef} value={hcp} onChange={(e) => setHcp(e.target.value)} onKeyDown={(e) => handleAddKey(e, ghinRef)} placeholder="Hándicap" type="number" className="w-24 px-3 py-2 rounded-lg border border-stone-300 font-mono bg-white" />
-          <input ref={ghinRef} value={ghin} onChange={(e) => setGhin(e.target.value)} onKeyDown={(e) => handleAddKey(e, "add")} placeholder="No. GHIN" className="w-28 px-3 py-2 rounded-lg border border-stone-300 font-mono bg-white" />
-          <button onClick={add} className="px-4 py-2 rounded-lg bg-emerald-800 text-amber-50 font-body font-semibold hover:bg-emerald-700">Agregar</button>
-        </div>
-      </section>
-      <section className="space-y-2">
-        {players.length === 0 && <p className="text-stone-500 font-body text-sm">Aún no hay jugadores en el roster.</p>}
-        {players.map((p) => (
-          <div key={p.id} className={`rounded-xl p-3 border flex items-center gap-3 flex-wrap ${p.id === myUserId ? "bg-amber-50 border-amber-400" : "bg-white/70 border-emerald-900/10"}`}>
-            <input value={p.name} onChange={(e) => update(p.id, "name", e.target.value)} className="flex-1 min-w-[100px] font-body bg-transparent border-b border-transparent focus:border-emerald-700 outline-none" />
-            {p.id === myUserId && <span className="text-xs font-body text-amber-700 font-semibold">tú</span>}
-            <div className="flex items-center gap-1 text-sm text-stone-500 font-body">
-              <span>HCP</span>
-              <input value={p.handicap} onChange={(e) => update(p.id, "handicap", e.target.value)} type="number" className="w-16 px-2 py-1 rounded-md border border-stone-300 font-mono text-right" />
-            </div>
-            <div className="flex items-center gap-1 text-sm text-stone-500 font-body">
-              <span>GHIN</span>
-              <input value={p.ghin || ""} onChange={(e) => update(p.id, "ghin", e.target.value)} className="w-24 px-2 py-1 rounded-md border border-stone-300 font-mono text-right" />
-            </div>
-            <button onClick={() => remove(p.id)} className="text-rose-700 text-sm font-body hover:underline">Eliminar</button>
-          </div>
-        ))}
-      </section>
     </div>
   );
 }
@@ -749,422 +700,78 @@ function PercentagesEditor({ percentages, setPercentages }) {
   );
 }
 
-// ---------- New Round Tab ----------
-const ROUND_DRAFT_KEY = "sk-round-draft";
+// ---------- Round Tab (unified create / join / live round) ----------
+function RoundTab({ myUserId, myProfile, courses, percentages, onSaveCourses, onSavePercentages, onSaveRound, onActiveRoundChange = () => {}, groupCode = "" }) {
+  const [stage, setStage] = useState("home"); // home | create | waiting | active | viewOnly | join | joinConfirm
+  const [code, setCode] = useState("");
+  const [meta, setMeta] = useState(null);
+  const [participants, setParticipants] = useState({});
+  const [scores, setScores] = useState({});
+  const [oyeEntries, setOyeEntries] = useState([]);
+  const [matches, setMatches] = useState([]);
+  const [playerStats, setPlayerStats] = useState({});
+  const [statsConfig, setStatsConfig] = useState({});
+  const [closedRound, setClosedRound] = useState(null);
+  const [savedFromClosed, setSavedFromClosed] = useState(false);
+  const [result, setResult] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-function NewRoundTab({ players, courses, percentages, onSaveCourses, onSavePercentages, onSaveRound, onActiveRoundChange = () => {} }) {
+  // create form
   const [date, setDate] = useState(todayISO());
   const [courseId, setCourseId] = useState(courses[0]?.id || "");
   const [salida, setSalida] = useState(1);
-  const [selected, setSelected] = useState([]);
-  const [handicaps, setHandicaps] = useState({});
-  const [roundHcpPct, setRoundHcpPct] = useState(100);
-  const [scores, setScores] = useState({});
-  const [playerStats, setPlayerStats] = useState({}); // { [playerId]: { [h]: { fw, ob, lago, putts } } }
-  const [statsConfig, setStatsConfig] = useState({}); // { [playerId]: { fw, ob, lago, putts } } booleans
   const [bet, setBet] = useState(200);
   const [pct, setPct] = useState(percentages);
-  const [oyeEntries, setOyeEntries] = useState([]);
-  const [matches, setMatches] = useState([]);
-  const [result, setResult] = useState(null);
-  const [draftLoaded, setDraftLoaded] = useState(false);
+  const [roundHcpPct, setRoundHcpPct] = useState(100);
+  const [myHcpForRound, setMyHcpForRound] = useState(myProfile?.handicap || 0);
 
-  // Load draft on first mount
+  // guest (host only)
+  const [guestName, setGuestName] = useState("");
+  const [guestHcp, setGuestHcp] = useState("");
+
+  // join form
+  const [joinCodeInput, setJoinCodeInput] = useState("");
+  const [joinError, setJoinError] = useState("");
+  const [joinHcp, setJoinHcp] = useState(myProfile?.handicap || 0);
+
+  const autoRefreshRef = useRef(null);
+  const saveTimers = useRef({});
+
   useEffect(() => {
-    storageGet(ROUND_DRAFT_KEY).then((r) => {
-      if (r?.value) {
-        try {
-          const d = JSON.parse(r.value);
-          if (d.date) setDate(d.date);
-          if (d.courseId) setCourseId(d.courseId);
-          if (d.salida) setSalida(d.salida);
-          if (d.selected?.length) setSelected(d.selected);
-          if (d.handicaps) setHandicaps(d.handicaps);
-          if (d.roundHcpPct) setRoundHcpPct(d.roundHcpPct);
-          if (d.scores) setScores(d.scores);
-          if (d.playerStats) setPlayerStats(d.playerStats);
-          if (d.statsConfig) setStatsConfig(d.statsConfig);
-          if (d.bet) setBet(d.bet);
-          if (d.pct) setPct(d.pct);
-          if (d.oyeEntries) setOyeEntries(d.oyeEntries);
-          if (d.matches) setMatches(d.matches);
-        } catch (e) {}
-      }
-      setDraftLoaded(true);
-    }).catch(() => setDraftLoaded(true));
-  }, []);
+    onActiveRoundChange(stage === "active" || stage === "waiting");
+  }, [stage]);
 
-  // Auto-save draft whenever key state changes
-  const draftTimer = useRef(null);
   useEffect(() => {
-    if (!draftLoaded) return;
-    clearTimeout(draftTimer.current);
-    draftTimer.current = setTimeout(() => {
-      storageSet(ROUND_DRAFT_KEY, JSON.stringify({ date, courseId, salida, selected, handicaps, roundHcpPct, scores, playerStats, statsConfig, bet, pct, oyeEntries, matches }));
-    }, 800);
-  }, [date, courseId, salida, selected, handicaps, roundHcpPct, scores, playerStats, statsConfig, bet, pct, oyeEntries, matches, draftLoaded]);
+    if ((stage === "waiting" || stage === "active" || stage === "viewOnly") && meta && code) {
+      const interval = stage === "waiting" ? 5000 : 12000;
+      autoRefreshRef.current = setInterval(() => refreshAll(meta, code), interval);
+      return () => clearInterval(autoRefreshRef.current);
+    }
+  }, [stage, meta, code]);
 
-  const [hcUpdated, setHcUpdated] = useState(false);
-
-  // Notify parent whether there is an active round in progress
-  useEffect(() => {
-    onActiveRoundChange(selected.length > 0);
-  }, [selected.length]);
-
-  // When a player's base handicap is edited in the Jugadores tab,
-  // update the round's handicap for that player and clear the stale result
-  useEffect(() => {
-    if (!selected.length) return;
-    setHandicaps((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      selected.forEach((id) => {
-        const player = players.find((p) => p.id === id);
-        if (player && Number(prev[id]) !== Number(player.handicap)) {
-          next[id] = player.handicap;
-          changed = true;
-        }
-      });
-      if (changed) {
-        setResult(null);
-        setHcUpdated(true);
-      }
-      return changed ? next : prev;
-    });
-  }, [players]);
   useEffect(() => {
     if (!courseId && courses[0]) setCourseId(courses[0].id);
   }, [courses]);
 
   const course = courses.find((c) => c.id === courseId);
-  const { v1, v2 } = vueltaHoles(salida);
-  const par3Holes = course ? course.pars.map((p, i) => (Number(p) === 3 ? i + 1 : null)).filter(Boolean) : [];
-
-  const toggle = (id, hcp) => {
-    setSelected((s) => {
-      if (s.includes(id)) return s.filter((x) => x !== id);
-      setHandicaps((h) => ({ ...h, [id]: h[id] ?? hcp }));
-      setScores((sc) => ({ ...sc, [id]: sc[id] ?? Array(18).fill("") }));
-      return [...s, id];
-    });
-  };
-  const setScore = (id, hole, value) => {
-    setScores((sc) => {
-      const arr = [...(sc[id] || Array(18).fill(""))];
-      arr[hole] = value;
-      return { ...sc, [id]: arr };
-    });
-  };
-  const setStatForPlayer = (playerId, h, field, value) =>
-    setPlayerStats((prev) => ({
-      ...prev,
-      [playerId]: { ...(prev[playerId] || {}), [h]: { ...((prev[playerId] || {})[h] || {}), [field]: value } }
-    }));
-  const toggleStatConfig = (playerId, field) =>
-    setStatsConfig((prev) => ({
-      ...prev,
-      [playerId]: { ...(prev[playerId] || {}), [field]: !((prev[playerId] || {})[field]) }
-    }));
-  const addOye = () => setOyeEntries((e) => [...e, { id: uid(), playerId: selected[0] || "", hole: par3Holes[0] || "", distance: "" }]);
-  const updateOye = (id, field, value) => setOyeEntries((e) => e.map((o) => (o.id === id ? { ...o, [field]: value } : o)));
-  const removeOye = (id) => setOyeEntries((e) => e.filter((o) => o.id !== id));
-
-  const calc = () => {
-    if (!course) return;
-    const pars = course.pars.map((p) => Number(p) || 4);
-    const siArr = (salida === 10 ? course.siFrom10 : course.siFrom1).map((s) => Number(s) || 1);
-    const participants = selected.map((id) => {
-      const player = players.find((p) => p.id === id);
-      const rawHandicap = Number(handicaps[id]) || 0;
-      const pctHcp = Number(roundHcpPct) || 100;
-      const playingHandicap = Math.round((rawHandicap * pctHcp) / 100);
-      return computeParticipant(
-        { playerId: id, name: player.name, handicap: playingHandicap, rawHandicap, pctHcp, scores: scores[id] || Array(18).fill(0) },
-        pars,
-        siArr,
-        v1,
-        v2
-      );
-    });
-    const sf = settleCategory(participants, bet, pct.stablefordFront, "ptsVuelta1", false);
-    const sb = settleCategory(participants, bet, pct.stablefordBack, "ptsVuelta2", false);
-    const so = settleCategory(participants, bet, pct.stablefordOverall, "stablefordPoints", false);
-    const mf = settleCategory(participants, bet, pct.medalFront, "netVuelta1", true);
-    const mb = settleCategory(participants, bet, pct.medalBack, "netVuelta2", true);
-    const mo = settleCategory(participants, bet, pct.medalOverall, "netMedal", true);
-    const oy = settleOyes(participants, bet, pct.oyeFront, pct.oyeBack, oyeEntries.filter((o) => o.playerId && o.hole && o.distance), v1, v2);
-
-    const settlement = {};
-    participants.forEach((p) => {
-      const total = sf.net[p.playerId] + sb.net[p.playerId] + so.net[p.playerId] + mf.net[p.playerId] + mb.net[p.playerId] + mo.net[p.playerId] + oy.net[p.playerId]; // oy.net = netFront + netBack combined
-      settlement[p.playerId] = { stablefordFront: sf.net[p.playerId], stablefordBack: sb.net[p.playerId], stablefordOverall: so.net[p.playerId], medalFront: mf.net[p.playerId], medalBack: mb.net[p.playerId], medalOverall: mo.net[p.playerId], oyeFront: oy.netFront[p.playerId], oyeBack: oy.netBack[p.playerId], total: +total.toFixed(2) };
-    });
-    const winners = { stablefordFront: sf.winners, stablefordBack: sb.winners, stablefordOverall: so.winners, medalFront: mf.winners, medalBack: mb.winners, medalOverall: mo.winners, oyeFront: oy.frontWinners, oyeBack: oy.backWinners };
-
-    setResult({ participants, pars, siArr, settlement, winners, v1, v2 });
-  };
-
-  const save = () => {
-    if (!result || !course) return;
-    const round = {
-      id: uid(),
-      date,
-      courseId: course.id,
-      courseName: course.name || "Sin nombre",
-      salida,
-      bet: Number(bet) || 0,
-      percentages: pct,
-      pars: result.pars,
-      si: result.siArr,
-      v1,
-      v2,
-      participants: result.participants,
-      oyeEntries: oyeEntries.filter((o) => o.playerId && o.hole && o.distance),
-      playerStats,
-      statsConfig,
-      winners: result.winners,
-      settlement: result.settlement,
-    };
-    onSaveRound(round);
-    onSavePercentages(pct);
-    storageSet(ROUND_DRAFT_KEY, JSON.stringify({}));
-    setSelected([]);
-    setScores({});
-    setHandicaps({});
-    setPlayerStats({});
-    setStatsConfig({});
-    setOyeEntries([]);
-    setMatches([]);
-    setResult(null);
-  };
-
-  return (
-    <div className="space-y-4">
-      <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10 space-y-3">
-        <h2 className="font-display text-lg text-emerald-900">Datos de la ronda</h2>
-        {selected.length > 0 && (
-          <div className="flex items-center justify-between bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 -mt-1">
-            <p className="text-xs font-body text-amber-800">📋 Ronda en curso — tus datos se guardan automáticamente. Puedes cambiar de pestaña y regresar cuando quieras.</p>
-            <button onClick={() => {
-              storageSet(ROUND_DRAFT_KEY, JSON.stringify({}));
-              setSelected([]); setScores({}); setHandicaps({}); setPlayerStats({}); setStatsConfig({});
-              setOyeEntries([]); setMatches([]); setResult(null);
-            }} className="ml-2 text-xs font-body text-rose-700 underline whitespace-nowrap">Descartar ronda</button>
-          </div>
-        )}
-        {hcUpdated && (
-          <div className="flex items-center justify-between bg-sky-50 border border-sky-400 rounded-lg px-3 py-2">
-            <p className="text-xs font-body text-sky-800">🔄 Se actualizó el HC de uno o más jugadores. Las tarjetas y los matches ya reflejan el nuevo HC. Vuelve a calcular la apuesta si es necesario.</p>
-            <button onClick={() => setHcUpdated(false)} className="ml-2 text-xs font-body text-sky-700 underline whitespace-nowrap">OK</button>
-          </div>
-        )}
-        <div className="grid grid-cols-2 gap-3">
-          <label className="text-sm font-body text-stone-600">
-            Fecha
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-mono" />
-          </label>
-          <label className="text-sm font-body text-stone-600">
-            Campo
-            <select value={courseId} onChange={(e) => setCourseId(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-body bg-white">
-              <option value="">Selecciona…</option>
-              {courses.map((c) => (
-                <option key={c.id} value={c.id}>{c.name || "Sin nombre"}</option>
-              ))}
-            </select>
-          </label>
-          <label className="text-sm font-body text-stone-600">
-            Salida (tee de inicio)
-            <select value={salida} onChange={(e) => setSalida(Number(e.target.value))} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-body bg-white">
-              <option value={1}>Hoyo 1</option>
-              <option value={10}>Hoyo 10</option>
-            </select>
-          </label>
-          <label className="text-sm font-body text-stone-600">
-            Apuesta por jugador ($)
-            <input type="number" value={bet} onChange={(e) => setBet(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-mono" />
-          </label>
-          <label className="text-sm font-body text-stone-600">
-            % de hándicap aplicable
-            <input type="number" value={roundHcpPct} onChange={(e) => setRoundHcpPct(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-mono" />
-          </label>
-        </div>
-        <p className="text-xs text-stone-500 font-body">Se aplica a TODOS los jugadores de esta ronda: hándicap de juego = hándicap × % (ej. 18 al 90% = juega con 16).</p>
-        {!course && <p className="text-xs text-rose-700 font-body">Crea un campo en la pestaña "Campos" antes de capturar la ronda.</p>}
-      </section>
-
-      <PercentagesEditor percentages={pct} setPercentages={setPct} />
-
-      {course && (
-        <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10">
-          <h2 className="font-display text-lg text-emerald-900 mb-3">Jugadores en la ronda</h2>
-          {players.length === 0 && <p className="text-stone-500 font-body text-sm">Agrega jugadores primero en la pestaña Jugadores.</p>}
-          <div className="space-y-1">
-            {players.map((p) => (
-              <label key={p.id} className="flex items-center gap-2 font-body text-sm py-1">
-                <input type="checkbox" checked={selected.includes(p.id)} onChange={() => toggle(p.id, p.handicap)} />
-                <span className="flex-1">{p.name}</span>
-                {selected.includes(p.id) && (
-                  <input type="number" value={handicaps[p.id] ?? p.handicap} onChange={(e) => setHandicaps((h) => ({ ...h, [p.id]: e.target.value }))} className="w-16 px-2 py-1 rounded-md border border-stone-300 font-mono text-right text-xs" title="Hándicap del jugador" />
-                )}
-              </label>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {course && selected.length > 0 && (
-        <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10 overflow-x-auto space-y-5">
-          <h2 className="font-display text-lg text-emerald-900">Tarjeta de golpes</h2>
-          <p className="text-xs text-stone-500 font-body -mt-3">Vuelta jugada primero: hoyos {v1.join(", ")} · Vuelta jugada después: hoyos {v2.join(", ")} (según salida)</p>
-
-          <HalfScorecard
-            title="Hoyos 1 a 9"
-            holeNumbers={[1, 2, 3, 4, 5, 6, 7, 8, 9]}
-            selectedIds={selected}
-            players={players}
-            scores={scores}
-            setScore={setScore}
-            handicaps={handicaps}
-            roundHcpPct={roundHcpPct}
-            pars={course.pars.map((p) => Number(p) || 4)}
-            siArr={(salida === 10 ? course.siFrom10 : course.siFrom1).map((s) => Number(s) || 1)}
-            playerStats={playerStats}
-            setStatForPlayer={setStatForPlayer}
-            statsConfig={statsConfig}
-            toggleStatConfig={toggleStatConfig}
-          />
-
-          <HalfScorecard
-            title="Hoyos 10 a 18"
-            holeNumbers={[10, 11, 12, 13, 14, 15, 16, 17, 18]}
-            selectedIds={selected}
-            players={players}
-            scores={scores}
-            setScore={setScore}
-            handicaps={handicaps}
-            roundHcpPct={roundHcpPct}
-            pars={course.pars.map((p) => Number(p) || 4)}
-            siArr={(salida === 10 ? course.siFrom10 : course.siFrom1).map((s) => Number(s) || 1)}
-            playerStats={playerStats}
-            setStatForPlayer={setStatForPlayer}
-            statsConfig={statsConfig}
-            toggleStatConfig={toggleStatConfig}
-          />
-
-          <AccumulatedScorecard
-            selectedIds={selected}
-            players={players}
-            scores={scores}
-            handicaps={handicaps}
-            roundHcpPct={roundHcpPct}
-            pars={course.pars.map((p) => Number(p) || 4)}
-            siArr={(salida === 10 ? course.siFrom10 : course.siFrom1).map((s) => Number(s) || 1)}
-          />
-
-          <div className="mt-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-display text-emerald-900">Registro de oyes (tiro más cercano, hoyos par 3)</h3>
-              <button onClick={addOye} className="text-xs font-body text-emerald-800 underline">+ agregar registro</button>
-            </div>
-            {oyeEntries.length === 0 && <p className="text-xs text-stone-500 font-body mt-1">Sin registros. Solo agrega si algún jugador quedó más cerca del hoyo en un par 3.</p>}
-            {oyeEntries.map((o) => (
-              <div key={o.id} className="flex items-center gap-2 mt-2 font-body text-sm">
-                <select value={o.playerId} onChange={(e) => updateOye(o.id, "playerId", e.target.value)} className="px-2 py-1 rounded-md border border-stone-300 bg-white flex-1">
-                  {selected.map((id) => (
-                    <option key={id} value={id}>{players.find((p) => p.id === id)?.name}</option>
-                  ))}
-                </select>
-                <select value={o.hole} onChange={(e) => updateOye(o.id, "hole", e.target.value)} className="px-2 py-1 rounded-md border border-stone-300 bg-white font-mono">
-                  {par3Holes.map((h) => (
-                    <option key={h} value={h}>Hoyo {h}</option>
-                  ))}
-                </select>
-                <input type="number" value={o.distance} onChange={(e) => updateOye(o.id, "distance", e.target.value)} placeholder="Distancia (m)" className="w-28 px-2 py-1 rounded-md border border-stone-300 font-mono" />
-                <button onClick={() => removeOye(o.id)} className="text-rose-700 text-xs">✕</button>
-              </div>
-            ))}
-          </div>
-
-          <button onClick={calc} className="mt-4 px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Calcular ronda</button>
-
-          <MatchPlayPanel
-            matches={matches}
-            setMatches={setMatches}
-            selected={selected}
-            players={players}
-            scores={scores}
-            handicaps={handicaps}
-            roundHcpPct={roundHcpPct}
-            pars={course ? course.pars.map((p) => Number(p) || 4) : []}
-            siArr={course ? (salida === 10 ? course.siFrom10 : course.siFrom1).map((s) => Number(s) || 1) : []}
-          />
-        </section>
-      )}
-
-      {result && <ResultPanel result={result} players={players} onSave={save} />}
-    </div>
-  );
-}
-
-// ---------- Shared Round Tab (2 groups, live via shared storage + round code) ----------
-function SharedRoundTab({ players, courses, percentages, onSaveRound, groupCode = '', onSetGroupCode = () => {}, onSyncGroup = () => {} }) {
-  const [stage, setStage] = useState("start"); // start | create | join | active
-  const [code, setCode] = useState("");
-  const [joinCodeInput, setJoinCodeInput] = useState("");
-  const [joinError, setJoinError] = useState("");
-  const [meta, setMeta] = useState(null);
-  const [myGroup, setMyGroup] = useState(null);
-  const [scores, setScores] = useState({});
-  const [oyeEntries, setOyeEntries] = useState([]);
-  const [closedRound, setClosedRound] = useState(null);
-  const [savedFromClosed, setSavedFromClosed] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [viewCode, setViewCode] = useState("");
-  const [viewError, setViewError] = useState("");
-  const autoRefreshRef = useRef(null);
-
-  // Auto-refresh every 12 seconds when in active or view-only stage
-  useEffect(() => {
-    if ((stage === "active" || stage === "viewOnly") && meta && code) {
-      autoRefreshRef.current = setInterval(() => refreshAll(meta, code), 12000);
-      return () => clearInterval(autoRefreshRef.current);
-    }
-  }, [stage, meta, code]);
-  const [result, setResult] = useState(null);
-  const saveTimers = useRef({});
-
-  // ----- Create form state -----
-  const [date, setDate] = useState(todayISO());
-  const [courseId, setCourseId] = useState(courses[0]?.id || "");
-  const [salida, setSalida] = useState(1);
-  const [bet, setBet] = useState(200);
-  const [pct, setPct] = useState(percentages);
-  const [roundHcpPct, setRoundHcpPct] = useState(100);
-  const [selected, setSelected] = useState([]);
-  const [handicaps, setHandicaps] = useState({});
-  const [groupAssign, setGroupAssign] = useState({});
-  const [creatorGroup, setCreatorGroup] = useState("A");
-  const [joinGroupChoice, setJoinGroupChoice] = useState("A");
-
-  const course = courses.find((c) => c.id === courseId);
-  const toggleSelect = (id, hcp) => {
-    setSelected((s) => {
-      if (s.includes(id)) return s.filter((x) => x !== id);
-      setHandicaps((h) => ({ ...h, [id]: h[id] ?? hcp }));
-      setGroupAssign((g) => ({ ...g, [id]: g[id] ?? "A" }));
-      return [...s, id];
-    });
-  };
-
-  const allPlayers = meta ? [...meta.groupA, ...meta.groupB] : [];
-  const myGroupIds = meta ? (myGroup === "A" ? meta.groupA : meta.groupB).map((p) => p.id) : [];
-  const otherGroupIds = meta ? (myGroup === "A" ? meta.groupB : meta.groupA).map((p) => p.id) : [];
+  const isHost = meta?.createdBy === myUserId;
+  const guestIds = (meta?.guests || []).map((g) => g.id);
+  const allPlayers = [
+    ...Object.entries(participants).map(([id, p]) => ({ id, name: p.name, handicap: p.handicap })),
+    ...(meta?.guests || []),
+  ];
+  const editableIds = [myUserId, ...(isHost ? guestIds : [])];
   const par3Holes = meta ? meta.pars.map((p, i) => (Number(p) === 3 ? i + 1 : null)).filter(Boolean) : [];
+  const handicaps = Object.fromEntries(allPlayers.map((p) => [p.id, p.handicap]));
+  const pars = meta ? meta.pars.map((p) => Number(p) || 4) : [];
+  const siArr = meta ? meta.si.map((s) => Number(s) || 1) : [];
 
   const refreshAll = async (m, c) => {
     setRefreshing(true);
-    const ps = [...m.groupA, ...m.groupB];
-    const entries = await Promise.all(ps.map(async (p) => [p.id, (await sGet(sharedScoresKey(c, p.id))) || Array(18).fill("")]));
+    const pd = (await sGet(sharedParticipantsKey(c))) || {};
+    setParticipants(pd);
+    const allIds = [...Object.keys(pd), ...(m.guests || []).map((g) => g.id)];
+    const entries = await Promise.all(allIds.map(async (id) => [id, (await sGet(sharedScoresKey(c, id))) || Array(18).fill("")]));
     setScores(Object.fromEntries(entries));
     setOyeEntries((await sGet(sharedOyesKey(c))) || []);
     setClosedRound(await sGet(sharedClosedKey(c)));
@@ -1172,28 +779,36 @@ function SharedRoundTab({ players, courses, percentages, onSaveRound, groupCode 
   };
 
   const createRound = async () => {
-    if (!course || selected.length < 2) return;
-    const pars = course.pars.map((p) => Number(p) || 4);
+    if (!course) return;
+    const p = course.pars.map((x) => Number(x) || 4);
     const si = (salida === 10 ? course.siFrom10 : course.siFrom1).map((s) => Number(s) || 1);
     const { v1, v2 } = vueltaHoles(salida);
-    const buildGroup = (g) =>
-      selected
-        .filter((id) => (groupAssign[id] || "A") === g)
-        .map((id) => ({ id, name: players.find((p) => p.id === id)?.name || "", handicap: Number(handicaps[id]) || 0 }));
-    const groupA = buildGroup("A");
-    const groupB = buildGroup("B");
-    if (groupA.length === 0 || groupB.length === 0) return;
     const newCode = makeRoundCode();
-    const newMeta = { code: newCode, date, courseName: course.name, pars, si, salida, v1, v2, bet: Number(bet) || 0, percentages: pct, roundHcpPct: Number(roundHcpPct) || 100, groupA, groupB, createdAt: Date.now() };
+    const newMeta = { code: newCode, date, courseName: course.name, pars: p, si, salida, v1, v2, bet: Number(bet) || 0, percentages: pct, roundHcpPct: Number(roundHcpPct) || 100, createdBy: myUserId, createdAt: Date.now(), guests: [] };
+    const myEntry = { name: myProfile?.name || "Host", handicap: Number(myHcpForRound) || 0, joinedAt: Date.now() };
     await sSet(sharedMetaKey(newCode), newMeta);
-    await Promise.all([...groupA, ...groupB].map((p) => sSet(sharedScoresKey(newCode, p.id), Array(18).fill(""))));
+    await sSet(sharedParticipantsKey(newCode), { [myUserId]: myEntry });
+    await sSet(sharedScoresKey(newCode, myUserId), Array(18).fill(""));
     await sSet(sharedOyesKey(newCode), []);
     setMeta(newMeta);
     setCode(newCode);
-    setMyGroup(creatorGroup);
-    setScores(Object.fromEntries([...groupA, ...groupB].map((p) => [p.id, Array(18).fill("")])));
+    setParticipants({ [myUserId]: myEntry });
+    setScores({ [myUserId]: Array(18).fill("") });
     setOyeEntries([]);
-    setStage("active");
+    setStage("waiting");
+  };
+
+  const addGuest = async () => {
+    if (!guestName.trim()) return;
+    const guestId = "guest-" + uid();
+    const guest = { id: guestId, name: guestName.trim(), handicap: Number(guestHcp) || 0 };
+    const updatedMeta = { ...meta, guests: [...(meta.guests || []), guest] };
+    await sSet(sharedMetaKey(code), updatedMeta);
+    await sSet(sharedScoresKey(code, guestId), Array(18).fill(""));
+    setMeta(updatedMeta);
+    setScores((sc) => ({ ...sc, [guestId]: Array(18).fill("") }));
+    setGuestName("");
+    setGuestHcp("");
   };
 
   const lookupCode = async () => {
@@ -1201,23 +816,29 @@ function SharedRoundTab({ players, courses, percentages, onSaveRound, groupCode 
     const c = joinCodeInput.trim().toUpperCase();
     if (!c) return;
     const m = await sGet(sharedMetaKey(c));
-    if (!m) {
-      setJoinError("No se encontró ese código. Verifica con quien creó la ronda.");
-      return;
-    }
+    if (!m) { setJoinError("No se encontró ese código. Verifica con quien creó la ronda."); return; }
     setMeta(m);
     setCode(c);
-    setStage("joinGroup");
+    setJoinHcp(myProfile?.handicap || 0);
+    setStage("joinConfirm");
   };
 
   const confirmJoin = async () => {
-    setMyGroup(joinGroupChoice);
+    const myEntry = { name: myProfile?.name || "?", handicap: Number(joinHcp) || 0, joinedAt: Date.now() };
+    const existing = (await sGet(sharedParticipantsKey(code))) || {};
+    await sSet(sharedParticipantsKey(code), { ...existing, [myUserId]: myEntry });
+    await sSet(sharedScoresKey(code, myUserId), Array(18).fill(""));
     await refreshAll(meta, code);
     setStage("active");
   };
 
+  const joinViewOnly = async () => {
+    await refreshAll(meta, code);
+    setStage("viewOnly");
+  };
+
   const setScore = (id, h, value) => {
-    if (!myGroupIds.includes(id)) return;
+    if (!editableIds.includes(id)) return;
     setScores((sc) => {
       const arr = [...(sc[id] || Array(18).fill(""))];
       arr[h] = value;
@@ -1228,8 +849,13 @@ function SharedRoundTab({ players, courses, percentages, onSaveRound, groupCode 
     });
   };
 
+  const setStatForPlayer = (playerId, h, field, value) =>
+    setPlayerStats((prev) => ({ ...prev, [playerId]: { ...(prev[playerId] || {}), [h]: { ...((prev[playerId] || {})[h] || {}), [field]: value } } }));
+  const toggleStatConfig = (playerId, field) =>
+    setStatsConfig((prev) => ({ ...prev, [playerId]: { ...(prev[playerId] || {}), [field]: !((prev[playerId] || {})[field]) } }));
+
   const addOye = () => {
-    const next = [...oyeEntries, { id: uid(), playerId: myGroupIds[0] || "", hole: par3Holes[0] || "", distance: "" }];
+    const next = [...oyeEntries, { id: uid(), playerId: myUserId, hole: par3Holes[0] || "", distance: "" }];
     setOyeEntries(next);
     sSet(sharedOyesKey(code), next);
   };
@@ -1245,51 +871,39 @@ function SharedRoundTab({ players, courses, percentages, onSaveRound, groupCode 
   };
 
   const calc = () => {
-    const participants = allPlayers.map((p) =>
+    const parts = allPlayers.map((p) =>
       computeParticipant({ playerId: p.id, name: p.name, handicap: Math.round((p.handicap * (Number(meta.roundHcpPct) || 100)) / 100), rawHandicap: p.handicap, pctHcp: meta.roundHcpPct, scores: scores[p.id] || Array(18).fill(0) }, meta.pars, meta.si, meta.v1, meta.v2)
     );
-    const sf = settleCategory(participants, meta.bet, meta.percentages.stablefordFront, "ptsVuelta1", false);
-    const sb = settleCategory(participants, meta.bet, meta.percentages.stablefordBack, "ptsVuelta2", false);
-    const so = settleCategory(participants, meta.bet, meta.percentages.stablefordOverall, "stablefordPoints", false);
-    const mf = settleCategory(participants, meta.bet, meta.percentages.medalFront, "netVuelta1", true);
-    const mb = settleCategory(participants, meta.bet, meta.percentages.medalBack, "netVuelta2", true);
-    const mo = settleCategory(participants, meta.bet, meta.percentages.medalOverall, "netMedal", true);
-    const oy = settleOyes(participants, meta.bet, meta.percentages.oyeFront, meta.percentages.oyeBack, oyeEntries.filter((o) => o.playerId && o.hole && o.distance), meta.v1, meta.v2);
+    const sf = settleCategory(parts, meta.bet, meta.percentages.stablefordFront, "ptsVuelta1", false);
+    const sb = settleCategory(parts, meta.bet, meta.percentages.stablefordBack, "ptsVuelta2", false);
+    const so = settleCategory(parts, meta.bet, meta.percentages.stablefordOverall, "stablefordPoints", false);
+    const mf = settleCategory(parts, meta.bet, meta.percentages.medalFront, "netVuelta1", true);
+    const mb = settleCategory(parts, meta.bet, meta.percentages.medalBack, "netVuelta2", true);
+    const mo = settleCategory(parts, meta.bet, meta.percentages.medalOverall, "netMedal", true);
+    const oy = settleOyes(parts, meta.bet, meta.percentages.oyeFront, meta.percentages.oyeBack, oyeEntries.filter((o) => o.playerId && o.hole && o.distance), meta.v1, meta.v2);
     const settlement = {};
-    participants.forEach((p) => {
-      const total = sf.net[p.playerId] + sb.net[p.playerId] + so.net[p.playerId] + mf.net[p.playerId] + mb.net[p.playerId] + mo.net[p.playerId] + oy.net[p.playerId]; // oy.net = netFront + netBack combined
+    parts.forEach((p) => {
+      const total = sf.net[p.playerId] + sb.net[p.playerId] + so.net[p.playerId] + mf.net[p.playerId] + mb.net[p.playerId] + mo.net[p.playerId] + oy.net[p.playerId];
       settlement[p.playerId] = { stablefordFront: sf.net[p.playerId], stablefordBack: sb.net[p.playerId], stablefordOverall: so.net[p.playerId], medalFront: mf.net[p.playerId], medalBack: mb.net[p.playerId], medalOverall: mo.net[p.playerId], oyeFront: oy.netFront[p.playerId], oyeBack: oy.netBack[p.playerId], total: +total.toFixed(2) };
     });
     const winners = { stablefordFront: sf.winners, stablefordBack: sb.winners, stablefordOverall: so.winners, medalFront: mf.winners, medalBack: mb.winners, medalOverall: mo.winners, oyeFront: oy.frontWinners, oyeBack: oy.backWinners };
-    setResult({ participants, pars: meta.pars, siArr: meta.si, settlement, winners, v1: meta.v1, v2: meta.v2 });
+    setResult({ participants: parts, pars: meta.pars, siArr: meta.si, settlement, winners, v1: meta.v1, v2: meta.v2 });
   };
 
   const closeAndSave = async () => {
     if (!result) return;
     const round = {
-      id: uid(),
-      date: meta.date,
-      courseId: null,
-      courseName: meta.courseName,
-      salida: meta.salida,
-      bet: meta.bet,
-      percentages: meta.percentages,
-      pars: result.pars,
-      si: result.siArr,
-      v1: result.v1,
-      v2: result.v2,
-      participants: result.participants,
+      id: uid(), date: meta.date, courseId: null, courseName: meta.courseName, salida: meta.salida,
+      bet: meta.bet, percentages: meta.percentages, pars: result.pars, si: result.siArr,
+      v1: result.v1, v2: result.v2, participants: result.participants,
       oyeEntries: oyeEntries.filter((o) => o.playerId && o.hole && o.distance),
-      winners: result.winners,
-      settlement: result.settlement,
-      sharedCode: code,
+      playerStats, statsConfig, winners: result.winners, settlement: result.settlement, sharedCode: code,
     };
     onSaveRound(round);
     await sSet(sharedClosedKey(code), round);
-    // Push to group so all players can pull it from historial
     if (groupCode) {
       const listKey = `grp-${groupCode}-list`;
-      const existing = await sGet(listKey) || [];
+      const existing = (await sGet(listKey)) || [];
       if (!existing.includes(round.id)) await sSet(listKey, [...existing, round.id]);
       await sSet(`grp-${groupCode}-rnd-${round.id}`, round);
     }
@@ -1303,240 +917,234 @@ function SharedRoundTab({ players, courses, percentages, onSaveRound, groupCode 
   };
 
   const exit = () => {
-    setStage("start");
+    setStage("home");
     setMeta(null);
     setCode("");
-    setMyGroup(null);
+    setParticipants({});
     setScores({});
     setOyeEntries([]);
+    setMatches([]);
+    setPlayerStats({});
+    setStatsConfig({});
     setClosedRound(null);
     setResult(null);
     setSavedFromClosed(false);
   };
 
-  if (stage === "start") {
-    return (
-      <div className="space-y-4">
-        <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10">
-          <h2 className="font-display text-lg text-emerald-900 mb-2">Ronda con 2 grupos</h2>
-          <p className="text-sm text-stone-600 font-body mb-3">Un grupo va adelante del otro en la cancha. Cada encargado captura solo los scores de su grupo desde su celular, y la apuesta se calcula sobre todos juntos.</p>
-          <div className="flex gap-2 flex-wrap">
-            <button onClick={() => setStage("create")} className="px-4 py-2 rounded-lg bg-emerald-800 text-amber-50 font-body font-semibold hover:bg-emerald-700">Crear ronda compartida</button>
-            <button onClick={() => setStage("join")} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Unirme con código</button>
-          </div>
-        </section>
-      </div>
-    );
-  }
-
-  if (stage === "join") {
-    return (
-      <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10 space-y-3">
-        <h2 className="font-display text-lg text-emerald-900">Unirme a una ronda</h2>
-        <input value={joinCodeInput} onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())} placeholder="Código (ej. AB12C)" className="w-full px-3 py-2 rounded-lg border border-stone-300 font-mono uppercase" />
-        {joinError && <p className="text-rose-700 text-xs font-body">{joinError}</p>}
-        <div className="flex gap-2">
-          <button onClick={lookupCode} className="px-4 py-2 rounded-lg bg-emerald-800 text-amber-50 font-body font-semibold hover:bg-emerald-700">Buscar</button>
-          <button onClick={() => setStage("start")} className="px-4 py-2 rounded-lg bg-stone-200 text-stone-700 font-body">Cancelar</button>
+  // ── HOME ──
+  if (stage === "home") return (
+    <div className="space-y-4">
+      <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10">
+        <h2 className="font-display text-lg text-emerald-900 mb-2">Ronda</h2>
+        <p className="text-sm text-stone-600 font-body mb-3">Crea una ronda y comparte el código con el grupo, o únete a una ronda activa con el código que te compartieron.</p>
+        <div className="flex gap-2 flex-wrap">
+          <button onClick={() => setStage("create")} className="px-4 py-2 rounded-lg bg-emerald-800 text-amber-50 font-body font-semibold hover:bg-emerald-700">Crear ronda</button>
+          <button onClick={() => setStage("join")} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Unirme con código</button>
         </div>
       </section>
-    );
-  }
+    </div>
+  );
 
-  if (stage === "joinGroup" && meta) {
-    return (
+  // ── CREATE ──
+  if (stage === "create") return (
+    <div className="space-y-4">
       <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10 space-y-3">
-        <h2 className="font-display text-lg text-emerald-900">{meta.courseName} · {meta.date}</h2>
-        <p className="text-sm text-stone-600 font-body">¿Cuál grupo vas a capturar tú?</p>
-        <div className="space-y-2">
-          <label className="flex items-center gap-2 font-body text-sm">
-            <input type="radio" checked={joinGroupChoice === "A"} onChange={() => setJoinGroupChoice("A")} />
-            Grupo A: {meta.groupA.map((p) => p.name).join(", ")}
+        <h2 className="font-display text-lg text-emerald-900">Nueva ronda</h2>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="text-sm font-body text-stone-600">
+            Fecha
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-mono" />
           </label>
-          <label className="flex items-center gap-2 font-body text-sm">
-            <input type="radio" checked={joinGroupChoice === "B"} onChange={() => setJoinGroupChoice("B")} />
-            Grupo B: {meta.groupB.map((p) => p.name).join(", ")}
+          <label className="text-sm font-body text-stone-600">
+            Campo
+            <select value={courseId} onChange={(e) => setCourseId(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-body bg-white">
+              <option value="">Selecciona…</option>
+              {courses.map((c) => <option key={c.id} value={c.id}>{c.name || "Sin nombre"}</option>)}
+            </select>
+          </label>
+          <label className="text-sm font-body text-stone-600">
+            Salida
+            <select value={salida} onChange={(e) => setSalida(Number(e.target.value))} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-body bg-white">
+              <option value={1}>Hoyo 1</option>
+              <option value={10}>Hoyo 10</option>
+            </select>
+          </label>
+          <label className="text-sm font-body text-stone-600">
+            Apuesta por jugador ($)
+            <input type="number" value={bet} onChange={(e) => setBet(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-mono" />
+          </label>
+          <label className="text-sm font-body text-stone-600">
+            % de hándicap
+            <input type="number" value={roundHcpPct} onChange={(e) => setRoundHcpPct(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-mono" />
+          </label>
+          <label className="text-sm font-body text-stone-600">
+            Tu hándicap esta ronda
+            <input type="number" value={myHcpForRound} onChange={(e) => setMyHcpForRound(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-mono" />
           </label>
         </div>
-        <button onClick={confirmJoin} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Confirmar y capturar</button>
-        <button onClick={async () => {
-          await refreshAll(meta, code);
-          setMyGroup(null);
-          setStage("viewOnly");
-        }} className="px-4 py-2 rounded-lg bg-stone-200 text-stone-700 font-body font-semibold">
-          Solo ver en tiempo real 👁
-        </button>
+        {!course && <p className="text-xs text-rose-700 font-body">Crea un campo en la pestaña Campos primero.</p>}
       </section>
-    );
-  }
-
-  if (stage === "create") {
-    return (
-      <div className="space-y-4">
-        <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10 space-y-3">
-          <h2 className="font-display text-lg text-emerald-900">Crear ronda compartida</h2>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="text-sm font-body text-stone-600">
-              Fecha
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-mono" />
-            </label>
-            <label className="text-sm font-body text-stone-600">
-              Campo
-              <select value={courseId} onChange={(e) => setCourseId(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-body bg-white">
-                <option value="">Selecciona…</option>
-                {courses.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name || "Sin nombre"}</option>
-                ))}
-              </select>
-            </label>
-            <label className="text-sm font-body text-stone-600">
-              Salida
-              <select value={salida} onChange={(e) => setSalida(Number(e.target.value))} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-body bg-white">
-                <option value={1}>Hoyo 1</option>
-                <option value={10}>Hoyo 10</option>
-              </select>
-            </label>
-            <label className="text-sm font-body text-stone-600">
-              Apuesta por jugador ($)
-              <input type="number" value={bet} onChange={(e) => setBet(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-mono" />
-            </label>
-            <label className="text-sm font-body text-stone-600">
-              % de hándicap aplicable
-              <input type="number" value={roundHcpPct} onChange={(e) => setRoundHcpPct(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-mono" />
-            </label>
-          </div>
-        </section>
-
-        <PercentagesEditor percentages={pct} setPercentages={setPct} />
-
-        {course && (
-          <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10">
-            <h2 className="font-display text-lg text-emerald-900 mb-3">Jugadores y grupo de cada uno</h2>
-            <div className="space-y-1">
-              {players.map((p) => (
-                <div key={p.id} className="flex items-center gap-2 font-body text-sm py-1 flex-wrap">
-                  <input type="checkbox" checked={selected.includes(p.id)} onChange={() => toggleSelect(p.id, p.handicap)} />
-                  <span className="flex-1">{p.name}</span>
-                  {selected.includes(p.id) && (
-                    <>
-                      <input type="number" value={handicaps[p.id] ?? p.handicap} onChange={(e) => setHandicaps((h) => ({ ...h, [p.id]: e.target.value }))} className="w-16 px-2 py-1 rounded-md border border-stone-300 font-mono text-right text-xs" />
-                      <select value={groupAssign[p.id] || "A"} onChange={(e) => setGroupAssign((g) => ({ ...g, [p.id]: e.target.value }))} className="px-2 py-1 rounded-md border border-stone-300 bg-white text-xs">
-                        <option value="A">Grupo A</option>
-                        <option value="B">Grupo B</option>
-                      </select>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="mt-3 text-sm font-body text-stone-600">
-              ¿Cuál grupo vas a capturar tú?
-              <select value={creatorGroup} onChange={(e) => setCreatorGroup(e.target.value)} className="ml-2 px-2 py-1 rounded-md border border-stone-300 bg-white">
-                <option value="A">Grupo A</option>
-                <option value="B">Grupo B</option>
-              </select>
-            </div>
-          </section>
-        )}
-
-        <div className="flex gap-2">
-          <button onClick={createRound} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Crear y compartir código</button>
-          <button onClick={() => setStage("start")} className="px-4 py-2 rounded-lg bg-stone-200 text-stone-700 font-body">Cancelar</button>
-        </div>
+      <PercentagesEditor percentages={pct} setPercentages={setPct} />
+      <div className="flex gap-2">
+        <button onClick={createRound} disabled={!course} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400 disabled:opacity-40">Crear y obtener código</button>
+        <button onClick={() => setStage("home")} className="px-4 py-2 rounded-lg bg-stone-200 text-stone-700 font-body">Cancelar</button>
       </div>
-    );
-  }
+    </div>
+  );
 
-  // ----- stage === viewOnly (read-only, auto-refreshes) -----
-  if (stage === "viewOnly" && meta) {
-    const allPlayers = [...meta.groupA, ...meta.groupB];
-    const par3Holes = meta.pars.map((p, i) => Number(p) === 3 ? i + 1 : null).filter(Boolean);
-    return (
-      <div className="space-y-4">
-        <section className="bg-emerald-950 text-amber-50 rounded-xl p-4 flex items-center justify-between flex-wrap gap-2">
-          <div>
-            <p className="font-display text-lg">Ronda en vivo · Código: <span className="tracking-widest">{code}</span></p>
-            <p className="font-body text-xs text-emerald-200">{meta.courseName} · {meta.date} · Se actualiza automáticamente cada 12 s</p>
+  // ── JOIN ──
+  if (stage === "join") return (
+    <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10 space-y-3">
+      <h2 className="font-display text-lg text-emerald-900">Unirme a una ronda</h2>
+      <input value={joinCodeInput} onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())} placeholder="Código (ej. AB12C)" className="w-full px-3 py-2 rounded-lg border border-stone-300 font-mono uppercase" autoFocus onKeyDown={(e) => e.key === "Enter" && lookupCode()} />
+      {joinError && <p className="text-rose-700 text-xs font-body">{joinError}</p>}
+      <div className="flex gap-2">
+        <button onClick={lookupCode} className="px-4 py-2 rounded-lg bg-emerald-800 text-amber-50 font-body font-semibold hover:bg-emerald-700">Buscar</button>
+        <button onClick={() => setStage("home")} className="px-4 py-2 rounded-lg bg-stone-200 text-stone-700 font-body">Cancelar</button>
+      </div>
+    </section>
+  );
+
+  // ── JOIN CONFIRM ──
+  if (stage === "joinConfirm" && meta) return (
+    <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10 space-y-3">
+      <h2 className="font-display text-lg text-emerald-900">{meta.courseName} · {meta.date}</h2>
+      <p className="text-sm text-stone-600 font-body">Apuesta: ${meta.bet} · HC%: {meta.roundHcpPct}%</p>
+      <label className="text-sm font-body text-stone-600 block">
+        Tu hándicap esta ronda
+        <input type="number" value={joinHcp} onChange={(e) => setJoinHcp(e.target.value)} className="w-full mt-1 px-3 py-2 rounded-lg border border-stone-300 font-mono" autoFocus />
+      </label>
+      <div className="flex gap-2 flex-wrap">
+        <button onClick={confirmJoin} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Unirme y capturar</button>
+        <button onClick={joinViewOnly} className="px-4 py-2 rounded-lg bg-stone-200 text-stone-700 font-body font-semibold">Solo ver 👁</button>
+        <button onClick={() => { setMeta(null); setCode(""); setStage("join"); }} className="px-4 py-2 rounded-lg bg-stone-100 text-stone-500 font-body text-sm">Atrás</button>
+      </div>
+    </section>
+  );
+
+  // ── WAITING (host lobby) ──
+  if (stage === "waiting" && meta) return (
+    <div className="space-y-4">
+      <section className="bg-emerald-950 text-amber-50 rounded-xl p-4">
+        <p className="font-display text-2xl tracking-[0.25em] mb-1">{code}</p>
+        <p className="font-body text-xs text-emerald-200 mb-3">{meta.courseName} · {meta.date} · Comparte este código con los demás jugadores</p>
+        <div className="flex gap-2 flex-wrap">
+          <button onClick={() => setStage("active")} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Comenzar ronda</button>
+          <button onClick={() => refreshAll(meta, code)} className="px-3 py-2 rounded-lg bg-emerald-900/60 text-emerald-100 font-body text-sm">{refreshing ? "…" : "Actualizar lista"}</button>
+          <button onClick={exit} className="px-3 py-2 rounded-lg bg-emerald-900/60 text-emerald-100 font-body text-sm">Cancelar</button>
+        </div>
+      </section>
+      <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10 space-y-2">
+        <h3 className="font-display text-emerald-900">En la sala ({allPlayers.length})</h3>
+        {allPlayers.length === 0 && <p className="text-sm text-stone-500 font-body">Esperando jugadores…</p>}
+        {allPlayers.map((p) => (
+          <div key={p.id} className="flex items-center gap-2 font-body text-sm py-0.5">
+            <span className="flex-1">{p.name}</span>
+            <span className="text-stone-400 text-xs">HC {p.handicap}</span>
+            {p.id === myUserId && <span className="text-xs text-amber-700 font-semibold">tú</span>}
+            {guestIds.includes(p.id) && <span className="text-xs text-stone-400">invitado</span>}
           </div>
+        ))}
+        <div className="border-t border-stone-200 pt-3 mt-1">
+          <p className="text-xs font-body text-stone-500 mb-2">Agregar jugador sin cuenta:</p>
           <div className="flex gap-2">
-            <button onClick={() => refreshAll(meta, code)} className="px-3 py-1.5 rounded-md bg-amber-500 text-emerald-950 font-body text-sm font-semibold">{refreshing ? "…" : "Actualizar ahora"}</button>
-            <button onClick={exit} className="px-3 py-1.5 rounded-md bg-emerald-900/60 text-emerald-100 font-body text-sm">Salir</button>
+            <input value={guestName} onChange={(e) => setGuestName(e.target.value)} placeholder="Nombre" className="flex-1 px-2 py-1.5 rounded-lg border border-stone-300 font-body text-sm bg-white" onKeyDown={(e) => e.key === "Enter" && addGuest()} />
+            <input type="number" value={guestHcp} onChange={(e) => setGuestHcp(e.target.value)} placeholder="HC" className="w-16 px-2 py-1.5 rounded-lg border border-stone-300 font-mono text-sm" />
+            <button onClick={addGuest} className="px-3 py-1.5 rounded-lg bg-stone-200 text-stone-700 font-body text-sm font-semibold">+ Agregar</button>
           </div>
-        </section>
-        {closedRound && (
-          <section className="bg-amber-50 border border-amber-400 rounded-xl p-3 font-body text-sm">
-            Esta ronda ya cerró.{" "}
-            <button onClick={() => { onSaveRound({ ...closedRound, id: uid() }); }} className="text-emerald-800 underline ml-1">Agregar a mi historial</button>
-          </section>
-        )}
-        <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10 overflow-x-auto space-y-5">
-          <HalfScorecard title="Hoyos 1 a 9" holeNumbers={[1,2,3,4,5,6,7,8,9]} selectedIds={allPlayers.map(p=>p.id)} players={allPlayers} scores={scores} setScore={() => {}} handicaps={Object.fromEntries(allPlayers.map(p=>[p.id,p.handicap]))} roundHcpPct={meta.roundHcpPct} pars={meta.pars} siArr={meta.si} readOnlyIds={allPlayers.map(p=>p.id)} />
-          <HalfScorecard title="Hoyos 10 a 18" holeNumbers={[10,11,12,13,14,15,16,17,18]} selectedIds={allPlayers.map(p=>p.id)} players={allPlayers} scores={scores} setScore={() => {}} handicaps={Object.fromEntries(allPlayers.map(p=>[p.id,p.handicap]))} roundHcpPct={meta.roundHcpPct} pars={meta.pars} siArr={meta.si} readOnlyIds={allPlayers.map(p=>p.id)} />
-          <AccumulatedScorecard selectedIds={allPlayers.map(p=>p.id)} players={allPlayers} scores={scores} handicaps={Object.fromEntries(allPlayers.map(p=>[p.id,p.handicap]))} roundHcpPct={meta.roundHcpPct} pars={meta.pars} siArr={meta.si} />
-        </section>
-      </div>
-    );
-  }
+        </div>
+      </section>
+    </div>
+  );
 
-  // ----- stage === active -----
+  // ── VIEW ONLY ──
+  if (stage === "viewOnly" && meta) return (
+    <div className="space-y-4">
+      <section className="bg-emerald-950 text-amber-50 rounded-xl p-4 flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <p className="font-display text-lg">Ronda en vivo · Código: <span className="tracking-widest">{code}</span></p>
+          <p className="font-body text-xs text-emerald-200">{meta.courseName} · {meta.date} · Se actualiza cada 12 s</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => refreshAll(meta, code)} className="px-3 py-1.5 rounded-md bg-amber-500 text-emerald-950 font-body text-sm font-semibold">{refreshing ? "…" : "Actualizar"}</button>
+          <button onClick={exit} className="px-3 py-1.5 rounded-md bg-emerald-900/60 text-emerald-100 font-body text-sm">Salir</button>
+        </div>
+      </section>
+      {closedRound && (
+        <section className="bg-amber-50 border border-amber-400 rounded-xl p-3 font-body text-sm">
+          Esta ronda ya cerró.{" "}
+          <button onClick={() => { onSaveRound({ ...closedRound, id: uid() }); }} className="text-emerald-800 underline ml-1">Agregar a mi historial</button>
+        </section>
+      )}
+      <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10 overflow-x-auto space-y-5">
+        <HalfScorecard title="Hoyos 1 a 9" holeNumbers={[1,2,3,4,5,6,7,8,9]} selectedIds={allPlayers.map((p)=>p.id)} players={allPlayers} scores={scores} setScore={() => {}} handicaps={handicaps} roundHcpPct={meta.roundHcpPct} pars={pars} siArr={siArr} readOnlyIds={allPlayers.map((p)=>p.id)} />
+        <HalfScorecard title="Hoyos 10 a 18" holeNumbers={[10,11,12,13,14,15,16,17,18]} selectedIds={allPlayers.map((p)=>p.id)} players={allPlayers} scores={scores} setScore={() => {}} handicaps={handicaps} roundHcpPct={meta.roundHcpPct} pars={pars} siArr={siArr} readOnlyIds={allPlayers.map((p)=>p.id)} />
+        <AccumulatedScorecard selectedIds={allPlayers.map((p)=>p.id)} players={allPlayers} scores={scores} handicaps={handicaps} roundHcpPct={meta.roundHcpPct} pars={pars} siArr={siArr} />
+      </section>
+    </div>
+  );
+
+  // ── ACTIVE ──
   if (!meta) return null;
+  const readOnlyIds = allPlayers.map((p) => p.id).filter((id) => !editableIds.includes(id));
   return (
     <div className="space-y-4">
       <section className="bg-emerald-950 text-amber-50 rounded-xl p-4 flex items-center justify-between flex-wrap gap-2">
         <div>
           <p className="font-display text-lg">Código: <span className="tracking-widest">{code}</span></p>
-          <p className="font-body text-xs text-emerald-200">{meta.courseName} · {meta.date} · Capturando: Grupo {myGroup} ({myGroupIds.length} jugadores)</p>
+          <p className="font-body text-xs text-emerald-200">{meta.courseName} · {meta.date} · {allPlayers.length} jugadores</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => refreshAll(meta, code)} className="px-3 py-1.5 rounded-md bg-amber-500 text-emerald-950 font-body text-sm font-semibold">{refreshing ? "Actualizando…" : "Actualizar"}</button>
+          <button onClick={() => refreshAll(meta, code)} className="px-3 py-1.5 rounded-md bg-amber-500 text-emerald-950 font-body text-sm font-semibold">{refreshing ? "…" : "Actualizar"}</button>
           <button onClick={exit} className="px-3 py-1.5 rounded-md bg-emerald-900/60 text-emerald-100 font-body text-sm">Salir</button>
         </div>
       </section>
 
       {closedRound && (
         <section className="bg-amber-50 border border-amber-400 rounded-xl p-3 text-sm font-body">
-          Esta ronda ya se cerró {closedRound.sharedCode === code ? "" : ""}.{" "}
+          Esta ronda ya se cerró.{" "}
           {!savedFromClosed && <button onClick={addClosedToHistory} className="text-emerald-800 underline ml-1">Agregar a mi historial</button>}
-          {savedFromClosed && <span className="text-emerald-700 ml-1">Agregada a tu historial ✓</span>}
+          {savedFromClosed && <span className="text-emerald-700 ml-1">Agregada ✓</span>}
         </section>
       )}
 
       <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10 overflow-x-auto space-y-5">
-        <HalfScorecard title="Hoyos 1 a 9" holeNumbers={[1, 2, 3, 4, 5, 6, 7, 8, 9]} selectedIds={allPlayers.map((p) => p.id)} players={allPlayers} scores={scores} setScore={setScore} handicaps={Object.fromEntries(allPlayers.map((p) => [p.id, p.handicap]))} roundHcpPct={meta.roundHcpPct} pars={meta.pars} siArr={meta.si} readOnlyIds={otherGroupIds} />
-        <HalfScorecard title="Hoyos 10 a 18" holeNumbers={[10, 11, 12, 13, 14, 15, 16, 17, 18]} selectedIds={allPlayers.map((p) => p.id)} players={allPlayers} scores={scores} setScore={setScore} handicaps={Object.fromEntries(allPlayers.map((p) => [p.id, p.handicap]))} roundHcpPct={meta.roundHcpPct} pars={meta.pars} siArr={meta.si} readOnlyIds={otherGroupIds} />
-        <AccumulatedScorecard selectedIds={allPlayers.map((p) => p.id)} players={allPlayers} scores={scores} handicaps={Object.fromEntries(allPlayers.map((p) => [p.id, p.handicap]))} roundHcpPct={meta.roundHcpPct} pars={meta.pars} siArr={meta.si} />
+        <p className="text-xs text-stone-500 font-body">Vuelta 1: hoyos {meta.v1.join(", ")} · Vuelta 2: hoyos {meta.v2.join(", ")}</p>
+        <HalfScorecard title="Hoyos 1 a 9" holeNumbers={[1,2,3,4,5,6,7,8,9]} selectedIds={allPlayers.map((p)=>p.id)} players={allPlayers} scores={scores} setScore={setScore} handicaps={handicaps} roundHcpPct={meta.roundHcpPct} pars={pars} siArr={siArr} readOnlyIds={readOnlyIds} playerStats={playerStats} setStatForPlayer={setStatForPlayer} statsConfig={statsConfig} toggleStatConfig={toggleStatConfig} />
+        <HalfScorecard title="Hoyos 10 a 18" holeNumbers={[10,11,12,13,14,15,16,17,18]} selectedIds={allPlayers.map((p)=>p.id)} players={allPlayers} scores={scores} setScore={setScore} handicaps={handicaps} roundHcpPct={meta.roundHcpPct} pars={pars} siArr={siArr} readOnlyIds={readOnlyIds} playerStats={playerStats} setStatForPlayer={setStatForPlayer} statsConfig={statsConfig} toggleStatConfig={toggleStatConfig} />
+        <AccumulatedScorecard selectedIds={allPlayers.map((p)=>p.id)} players={allPlayers} scores={scores} handicaps={handicaps} roundHcpPct={meta.roundHcpPct} pars={pars} siArr={siArr} />
 
         <div>
           <div className="flex items-center justify-between">
-            <h3 className="font-display text-emerald-900">Registro de oyes (par 3)</h3>
-            <button onClick={addOye} className="text-xs font-body text-emerald-800 underline">+ agregar registro</button>
+            <h3 className="font-display text-emerald-900">Oyes (tiro más cercano, par 3)</h3>
+            <button onClick={addOye} className="text-xs font-body text-emerald-800 underline">+ agregar</button>
           </div>
+          {oyeEntries.length === 0 && <p className="text-xs text-stone-500 font-body mt-1">Sin registros aún.</p>}
           {oyeEntries.map((o) => (
             <div key={o.id} className="flex items-center gap-2 mt-2 font-body text-sm flex-wrap">
               <select value={o.playerId} onChange={(e) => updateOye(o.id, "playerId", e.target.value)} className="px-2 py-1 rounded-md border border-stone-300 bg-white flex-1">
-                {allPlayers.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
+                {allPlayers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
               <select value={o.hole} onChange={(e) => updateOye(o.id, "hole", e.target.value)} className="px-2 py-1 rounded-md border border-stone-300 bg-white font-mono">
-                {par3Holes.map((h) => (
-                  <option key={h} value={h}>Hoyo {h}</option>
-                ))}
+                {par3Holes.map((h) => <option key={h} value={h}>Hoyo {h}</option>)}
               </select>
-              <input type="number" value={o.distance} onChange={(e) => updateOye(o.id, "distance", e.target.value)} placeholder="Distancia (m)" className="w-28 px-2 py-1 rounded-md border border-stone-300 font-mono" />
+              <input type="number" value={o.distance} onChange={(e) => updateOye(o.id, "distance", e.target.value)} placeholder="Dist. (m)" className="w-24 px-2 py-1 rounded-md border border-stone-300 font-mono" />
               <button onClick={() => removeOye(o.id)} className="text-rose-700 text-xs">✕</button>
             </div>
           ))}
         </div>
 
-        <button onClick={calc} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Cerrar ronda y calcular apuesta</button>
+        <MatchPlayPanel matches={matches} setMatches={setMatches} selected={allPlayers.map((p)=>p.id)} players={allPlayers} scores={scores} handicaps={handicaps} roundHcpPct={meta.roundHcpPct} pars={pars} siArr={siArr} />
+
+        {isHost && (
+          <button onClick={calc} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Cerrar ronda y calcular apuesta</button>
+        )}
       </section>
 
-      {result && <ResultPanel result={result} players={allPlayers} onSave={closeAndSave} />}
+      {result && isHost && <ResultPanel result={result} players={allPlayers} onSave={closeAndSave} />}
     </div>
   );
 }
-
 // ---------- Match Play ----------
 function calcMatch(p1Id, p2Id, hcpPct, scores, handicaps, pars, siArr) {
   const rawHcp1 = Number(handicaps[p1Id]) || 0;

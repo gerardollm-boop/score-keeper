@@ -75,3 +75,18 @@ export async function usersGetAll() {
   try { const snap = await get(ref(db, "scorekeeper/users")); return snap.exists() ? snap.val() : {}; }
   catch (e) { return {}; }
 }
+
+export async function userGet(userId) {
+  if (!db) return null;
+  try { const snap = await get(ref(db, `scorekeeper/users/${userId}`)); return snap.exists() ? snap.val() : null; }
+  catch (e) { return null; }
+}
+
+export async function userUpdate(userId, fields) {
+  if (!db) return;
+  try {
+    const snap = await get(ref(db, `scorekeeper/users/${userId}`));
+    const current = snap.exists() ? snap.val() : {};
+    await set(ref(db, `scorekeeper/users/${userId}`), { ...current, ...fields });
+  } catch (e) {}
+}
