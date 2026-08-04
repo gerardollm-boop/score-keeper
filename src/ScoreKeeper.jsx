@@ -178,6 +178,33 @@ function settleOyes(participants, bet, pctFront, pctBack, entries, v1, v2) {
   return { frontWinners, backWinners, netFront, netBack, net };
 }
 
+function computeLeaderboardEntry(userId, userName, rounds) {
+  const mine = rounds.filter((r) => r.participants?.some((p) => p.playerId === userId));
+  if (!mine.length) return { name: userName, rounds: 0, avgGross: 0, avgNet: 0, bestNet: null, medalWins: 0, stablefordWins: 0, oyeWins: 0, lastPlayed: null };
+  let totalGross = 0, totalNet = 0, bestNet = Infinity, medalWins = 0, stablefordWins = 0, oyeWins = 0;
+  for (const r of mine) {
+    const p = r.participants.find((p) => p.playerId === userId);
+    if (!p) continue;
+    totalGross += p.grossTotal || 0;
+    totalNet += p.netMedal || 0;
+    if ((p.netMedal || 0) < bestNet) bestNet = p.netMedal;
+    if (r.winners?.medalOverall?.includes(userId)) medalWins++;
+    if (r.winners?.stablefordOverall?.includes(userId)) stablefordWins++;
+    if (r.winners?.oyeFront?.includes(userId) || r.winners?.oyeBack?.includes(userId)) oyeWins++;
+  }
+  return {
+    name: userName,
+    rounds: mine.length,
+    avgGross: Math.round(totalGross / mine.length),
+    avgNet: Math.round(totalNet / mine.length),
+    bestNet: bestNet === Infinity ? null : bestNet,
+    medalWins,
+    stablefordWins,
+    oyeWins,
+    lastPlayed: mine[0]?.date?.slice(0, 10) || null,
+  };
+}
+
 // ---------- Storage ----------
 async function loadData() {
   try {
@@ -362,6 +389,15 @@ export default function ScoreKeeper() {
     saveData(data);
     if (next.rounds && next.rounds.length > rounds.length) {
       pushRoundToGroup(next.rounds[0], next.groupCode ?? groupCode);
+      if (myUserId && firebaseEnabled) {
+        const newRound = next.rounds[0];
+        roundSave(myUserId, newRound).then(() =>
+          roundsGet(myUserId).then((all) => {
+            const entry = computeLeaderboardEntry(myUserId, myProfile?.name || "", all);
+            leaderboardUpdate(myUserId, entry);
+          })
+        );
+      }
     }
   };
 
