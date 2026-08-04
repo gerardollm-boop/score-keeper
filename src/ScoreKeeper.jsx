@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { storageGet, storageSet, sharedGet, sharedSet, firebaseEnabled } from "./storage";
-import { auth } from "./firebase";
-import { onAuthStateChanged } from "firebase/auth";
 
 // ---------- Constants ----------
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -249,24 +247,12 @@ export default function ScoreKeeper() {
   const [syncing, setSyncing] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
-  // Stable per-device identity — resolved from localStorage immediately,
-  // upgraded to Firebase anonymous UID on first open if not yet set.
-  const [myUserId, setMyUserId] = useState(() => localStorage.getItem("sk_myUserId") || "");
-  useEffect(() => {
-    if (localStorage.getItem("sk_myUserId")) return; // already stable, nothing to do
-    if (auth) {
-      const unsub = onAuthStateChanged(auth, (user) => {
-        if (!user) return;
-        localStorage.setItem("sk_myUserId", user.uid);
-        setMyUserId(user.uid);
-      });
-      return unsub;
-    } else {
-      const id = uid();
-      localStorage.setItem("sk_myUserId", id);
-      setMyUserId(id);
-    }
-  }, []);
+  // Stable per-device identity — generated once and persisted in localStorage.
+  const [myUserId] = useState(() => {
+    let id = localStorage.getItem("sk_myUserId");
+    if (!id) { id = uid(); localStorage.setItem("sk_myUserId", id); }
+    return id;
+  });
 
   useEffect(() => {
     loadData().then((d) => {
