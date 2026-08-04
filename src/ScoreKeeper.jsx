@@ -350,8 +350,14 @@ export default function ScoreKeeper() {
       groupCode: next.groupCode ?? groupCode,
     };
     if (next.rounds !== undefined) setRounds(next.rounds);
-    if (next.courses) setCourses(next.courses);
-    if (next.percentages) setPercentages(next.percentages);
+    if (next.courses) {
+      setCourses(next.courses);
+      if (myUserId) userUpdate(myUserId, { courses: next.courses });
+    }
+    if (next.percentages) {
+      setPercentages(next.percentages);
+      if (myUserId) userUpdate(myUserId, { percentages: next.percentages });
+    }
     if (next.groupCode !== undefined) setGroupCode(next.groupCode);
     saveData(data);
     if (next.rounds && next.rounds.length > rounds.length) {
@@ -769,7 +775,15 @@ function RoundTab({ myUserId, myProfile, courses, percentages, onSavePercentages
   }, [courses]);
 
   useEffect(() => { setPct(percentages); }, [percentages]);
-  useEffect(() => { if (myProfile?.handicap != null) { setMyHcpForRound(myProfile.handicap); setJoinHcp(myProfile.handicap); } }, [myProfile]);
+  useEffect(() => {
+    if (!myProfile) return;
+    if (myProfile.handicap != null) {
+      setMyHcpForRound(myProfile.handicap);
+      setJoinHcp(myProfile.handicap);
+    }
+    if (myProfile.courses?.length) setCourses(myProfile.courses);
+    if (myProfile.percentages) setPercentages(myProfile.percentages);
+  }, [myProfile]);
 
   const course = courses.find((c) => c.id === courseId);
   const isHost = meta?.createdBy === myUserId;
