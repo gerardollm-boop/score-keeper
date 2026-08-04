@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { storageGet, storageSet, sharedGet, sharedSet, firebaseEnabled } from "./storage";
+import { storageGet, storageSet, sharedGet, sharedSet, firebaseEnabled, userCreate, userExists, usersGetAll } from "./storage";
 
 // ---------- Constants ----------
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -247,12 +247,43 @@ export default function ScoreKeeper() {
   const [syncing, setSyncing] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
-  // Stable per-device identity — generated once and persisted in localStorage.
-  const [myUserId] = useState(() => {
-    let id = localStorage.getItem("sk_myUserId");
-    if (!id) { id = uid(); localStorage.setItem("sk_myUserId", id); }
-    return id;
-  });
+  // Phase 2 identity: Firebase profile + PIN. Falls back to local uid if Firebase unavailable.
+  const [myUserId, setMyUserId] = useState("");
+  const [authChecked, setAuthChecked] = useState(false);
+
+  useEffect(() => {
+    if (!firebaseEnabled) {
+      // No Firebase — use local stable id (Phase 1 fallback)
+      let id = localStorage.getItem("sk_myUserId");
+      if (!id) { id = uid(); localStorage.setItem("sk_myUserId", id); }
+      setMyUserId(id);
+      setAuthChecked(true);
+      return;
+    }
+    const stored = localStorage.getItem("sk_myUserId");
+    if (!stored) { setAuthChecked(true); return; } // no id → show LoginScreen
+    userExists(stored).then((exists) => {
+      if (exists === true || exists === null) {
+        // found in Firebase, or network error — proceed optimistically
+        setMyUserId(stored);
+      } else {
+        // false: stale Phase-1 random id not in Firebase → force login
+        localStorage.removeItem("sk_myUserId");
+      }
+      setAuthChecked(true);
+    });
+  }, []);
+
+  const handleLogin = (newUserId) => {
+    const oldId = localStorage.getItem("sk_myUserId");
+    localStorage.setItem("sk_myUserId", newUserId);
+    setMyUserId(newUserId);
+    // Migrate roster: if Phase 1 claimed a player with the old random id, repoint it
+    if (oldId && oldId !== newUserId) {
+      const updated = players.map((p) => p.id === oldId ? { ...p, id: newUserId } : p);
+      if (updated.some((p) => p.id === newUserId)) persist({ players: updated });
+    }
+  };
 
   useEffect(() => {
     loadData().then((d) => {
@@ -321,12 +352,16 @@ export default function ScoreKeeper() {
     }
   };
 
-  if (!loaded) {
+  if (!loaded || !authChecked) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#F3EFE3]">
         <div className="font-mono text-emerald-900">Cargando Score Keeper…</div>
       </div>
     );
+  }
+
+  if (firebaseEnabled && !myUserId) {
+    return <LoginScreen onLogin={handleLogin} />;
   }
 
   return (
@@ -436,22 +471,98 @@ export default function ScoreKeeper() {
 }
 
 // ---------- Players Tab ----------
+// ---------- Login Screen (Phase 2 PIN auth) ----------
+function LoginScreen({ onLogin }) {
+  const [mode, setMode] = useState("choose"); // choose | create | join
+  const [name, setName] = useState("");
+  const [pin, setPin] = useState("");
+  const [users, setUsers] = useState({});
+  const [selectedId, setSelectedId] = useState("");
+  const [joinPin, setJoinPin] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (mode === "join") usersGetAll().then(setUsers);
+  }, [mode]);
+
+  const handleCreate = async () => {
+    if (!name.trim() || pin.length !== 4) { setError("Ingresa tu nombre y un PIN de 4 dígitos."); return; }
+    setLoading(true);
+    const id = uid();
+    const ok = await userCreate(id, { name: name.trim(), pin, createdAt: Date.now() });
+    if (ok) { onLogin(id); }
+    else { setError("No se pudo guardar el perfil. Verifica tu conexión."); setLoading(false); }
+  };
+
+  const handleJoin = () => {
+    if (!selectedId) { setError("Selecciona tu nombre."); return; }
+    const u = users[selectedId];
+    if (!u || u.pin !== joinPin) { setError("PIN incorrecto."); return; }
+    onLogin(selectedId);
+  };
+
+  const card = "bg-white rounded-2xl shadow-lg max-w-sm w-full p-6 space-y-4";
+  const btnPrimary = "w-full px-4 py-3 rounded-xl bg-emerald-800 text-amber-50 font-body font-semibold hover:bg-emerald-700";
+  const btnSecondary = "w-full px-4 py-3 rounded-xl bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400";
+  const inputCls = "w-full px-3 py-2 rounded-lg border border-stone-300 font-body bg-white";
+
+  if (mode === "choose") return (
+    <div className="min-h-screen bg-[#F3EFE3] flex items-center justify-center p-4">
+      <div className={card}>
+        <h1 className="font-display text-2xl text-emerald-900">Score Keeper</h1>
+        <p className="font-body text-stone-600 text-sm">Crea un perfil para que tu historial se sincronice entre dispositivos.</p>
+        <button onClick={() => setMode("create")} className={btnPrimary}>Crear perfil nuevo</button>
+        <button onClick={() => setMode("join")} className={btnSecondary}>Ya tengo perfil</button>
+      </div>
+    </div>
+  );
+
+  if (mode === "create") return (
+    <div className="min-h-screen bg-[#F3EFE3] flex items-center justify-center p-4">
+      <div className={card}>
+        <h2 className="font-display text-xl text-emerald-900">Crear perfil</h2>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tu nombre" className={inputCls} autoFocus />
+        <input value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+          placeholder="PIN de 4 dígitos" type="password" inputMode="numeric" className={inputCls} />
+        {error && <p className="text-rose-700 text-sm font-body">{error}</p>}
+        <button onClick={handleCreate} disabled={loading} className={btnPrimary}>{loading ? "Guardando…" : "Crear perfil"}</button>
+        <button onClick={() => { setMode("choose"); setError(""); }} className="w-full text-sm font-body text-stone-500 hover:underline">Volver</button>
+      </div>
+    </div>
+  );
+
+  // join mode
+  const userList = Object.entries(users);
+  return (
+    <div className="min-h-screen bg-[#F3EFE3] flex items-center justify-center p-4">
+      <div className={card}>
+        <h2 className="font-display text-xl text-emerald-900">Iniciar sesión</h2>
+        {userList.length === 0
+          ? <p className="text-stone-500 font-body text-sm">Cargando perfiles…</p>
+          : <select value={selectedId} onChange={(e) => { setSelectedId(e.target.value); setError(""); }}
+              className={inputCls}>
+              <option value="">Selecciona tu nombre…</option>
+              {userList.map(([id, u]) => <option key={id} value={id}>{u.name}</option>)}
+            </select>
+        }
+        <input value={joinPin} onChange={(e) => setJoinPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+          placeholder="Tu PIN" type="password" inputMode="numeric" className={inputCls} onKeyDown={(e) => e.key === "Enter" && handleJoin()} />
+        {error && <p className="text-rose-700 text-sm font-body">{error}</p>}
+        <button onClick={handleJoin} className={btnSecondary}>Entrar</button>
+        <button onClick={() => { setMode("choose"); setError(""); }} className="w-full text-sm font-body text-stone-500 hover:underline">Volver</button>
+      </div>
+    </div>
+  );
+}
+
 function PlayersTab({ players, onChange, myUserId }) {
   const [name, setName] = useState("");
   const [hcp, setHcp] = useState("");
   const [ghin, setGhin] = useState("");
-  const [selfName, setSelfName] = useState("");
   const nameRef = useRef(null);
   const hcpRef = useRef(null);
   const ghinRef = useRef(null);
-
-  const isMeInRoster = myUserId && players.some((p) => p.id === myUserId);
-
-  const addSelf = () => {
-    if (!selfName.trim() || !myUserId) return;
-    onChange([...players, { id: myUserId, name: selfName.trim(), handicap: 0, ghin: "" }]);
-    setSelfName("");
-  };
 
   const add = () => {
     if (!name.trim()) return;
@@ -474,23 +585,6 @@ function PlayersTab({ players, onChange, myUserId }) {
 
   return (
     <div className="space-y-4">
-      {myUserId && !isMeInRoster && (
-        <section className="bg-amber-50 rounded-xl p-4 border border-amber-400">
-          <h2 className="font-display text-lg text-emerald-900 mb-1">¿Quién eres tú?</h2>
-          <p className="text-sm text-stone-600 font-body mb-3">Agrégate al roster con tu nombre. Tu historial y stats quedarán vinculados a este dispositivo.</p>
-          <div className="flex gap-2">
-            <input
-              value={selfName}
-              onChange={(e) => setSelfName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addSelf()}
-              placeholder="Tu nombre"
-              className="flex-1 px-3 py-2 rounded-lg border border-amber-400 font-body bg-white"
-              autoFocus
-            />
-            <button onClick={addSelf} className="px-4 py-2 rounded-lg bg-amber-500 text-emerald-950 font-body font-semibold hover:bg-amber-400">Soy yo</button>
-          </div>
-        </section>
-      )}
       <section className="bg-white/70 rounded-xl p-4 border border-emerald-900/10">
         <h2 className="font-display text-lg text-emerald-900 mb-3">Agregar jugador</h2>
         <div className="flex gap-2 flex-wrap">

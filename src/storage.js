@@ -55,3 +55,23 @@ export async function sharedSet(key, value) {
 }
 
 export const firebaseEnabled = !!db;
+
+// ── User profiles (Phase 2 PIN auth) ─────────────────────
+export async function userCreate(userId, profile) {
+  if (!db) return false;
+  try { await set(ref(db, `scorekeeper/users/${userId}`), profile); return true; }
+  catch (e) { return false; }
+}
+
+export async function userExists(userId) {
+  // true = found, false = not found, null = network error (caller proceeds optimistically)
+  if (!db) return null;
+  try { const snap = await get(ref(db, `scorekeeper/users/${userId}`)); return snap.exists(); }
+  catch (e) { return null; }
+}
+
+export async function usersGetAll() {
+  if (!db) return {};
+  try { const snap = await get(ref(db, "scorekeeper/users")); return snap.exists() ? snap.val() : {}; }
+  catch (e) { return {}; }
+}
