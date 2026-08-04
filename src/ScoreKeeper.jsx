@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { storageGet, storageSet, sharedGet, sharedSet, firebaseEnabled, userCreate, userExists, usersGetAll, userGet, userUpdate } from "./storage";
+import { storageGet, storageSet, sharedGet, sharedSet, firebaseEnabled, userCreate, userExists, usersGetAll, userGet, userUpdate, roundSave, roundsGet, leaderboardUpdate, leaderboardGet } from "./storage";
 
 // ---------- Constants ----------
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -295,6 +295,22 @@ export default function ScoreKeeper() {
       });
     });
   }, []);
+
+  useEffect(() => {
+    if (!myUserId || !firebaseEnabled) return;
+    roundsGet(myUserId).then((fbRounds) => {
+      if (fbRounds.length > 0) {
+        setRounds(fbRounds);
+      } else {
+        // One-time migration: push existing localStorage rounds to Firebase
+        loadData().then((d) => {
+          if (d.rounds?.length > 0) {
+            d.rounds.forEach((r) => roundSave(myUserId, r));
+          }
+        });
+      }
+    });
+  }, [myUserId]);
 
   // Push a round to the shared group store
   const pushRoundToGroup = async (round, code) => {
