@@ -472,6 +472,7 @@ export default function ScoreKeeper() {
             ["historial", "📋 Historial"],
             ["acumulado", "Acumulado"],
             ["mystats", "Mis Stats"],
+            ["ranking", "Ranking"],
           ].map(([key, label]) => (
             <button
               key={key}
@@ -534,6 +535,7 @@ export default function ScoreKeeper() {
         )}
         {tab === "acumulado" && <StandingsTab rounds={rounds} />}
         {tab === "mystats" && <MyStatsTab rounds={rounds} />}
+        {tab === "ranking" && <LeaderboardTab />}
       </main>
     </div>
   );
@@ -2163,6 +2165,76 @@ function MyStatsTab({ rounds }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function LeaderboardTab() {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+
+  const load = () => {
+    setLoading(true);
+    leaderboardGet().then((raw) => {
+      const rows = Object.entries(raw).map(([id, v]) => ({ id, ...v }))
+        .filter((r) => r.rounds > 0)
+        .sort((a, b) => (a.avgNet || 0) - (b.avgNet || 0));
+      setData(rows);
+      setLoading(false);
+    });
+  };
+
+  React.useEffect(() => { load(); }, []);
+
+  return (
+    <div className="p-3 font-body">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-display text-emerald-900 text-lg">Ranking Global</h2>
+        <button
+          onClick={load}
+          disabled={loading}
+          style={{ touchAction: "manipulation" }}
+          className="text-xs px-3 py-1.5 rounded-lg bg-emerald-800 text-amber-50 disabled:opacity-50"
+        >
+          {loading ? "Cargando…" : "Actualizar"}
+        </button>
+      </div>
+      {loading && <p className="text-stone-400 text-sm text-center py-8">Cargando ranking…</p>}
+      {!loading && (!data || data.length === 0) && (
+        <p className="text-stone-400 text-sm text-center py-8">Aún no hay rondas registradas.</p>
+      )}
+      {!loading && data && data.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="text-xs text-stone-500 border-b border-stone-200">
+                <th className="text-left py-1 pr-2">#</th>
+                <th className="text-left py-1 pr-3">Jugador</th>
+                <th className="text-center py-1 pr-2">Rondas</th>
+                <th className="text-center py-1 pr-2">Gross</th>
+                <th className="text-center py-1 pr-2">Net</th>
+                <th className="text-center py-1 pr-2">Mejor</th>
+                <th className="text-center py-1 pr-2">🏅</th>
+                <th className="text-center py-1">Última</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((row, i) => (
+                <tr key={row.id} className={`border-b border-stone-100 ${i === 0 ? "bg-amber-50" : ""}`}>
+                  <td className="py-2 pr-2 text-stone-400">{i + 1}</td>
+                  <td className="py-2 pr-3 font-semibold text-emerald-900 truncate max-w-[100px]">{row.name || "—"}</td>
+                  <td className="py-2 pr-2 text-center text-stone-600">{row.rounds}</td>
+                  <td className="py-2 pr-2 text-center text-stone-600">{row.avgGross ?? "—"}</td>
+                  <td className="py-2 pr-2 text-center font-semibold text-emerald-800">{row.avgNet ?? "—"}</td>
+                  <td className="py-2 pr-2 text-center text-stone-600">{row.bestNet ?? "—"}</td>
+                  <td className="py-2 pr-2 text-center text-stone-600">{(row.medalWins || 0) + (row.stablefordWins || 0) + (row.oyeWins || 0)}</td>
+                  <td className="py-2 text-center text-stone-400 text-xs">{row.lastPlayed || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
