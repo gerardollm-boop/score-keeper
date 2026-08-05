@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { storageGet, storageSet, sharedGet, sharedSet, firebaseEnabled, userCreate, userExists, usersGetAll, userGet, userUpdate } from "./storage";
+import { storageGet, storageSet, sharedGet, sharedSet, firebaseEnabled, userCreate, userExists, usersGetAll, userGet, userUpdate, roundSave, roundsGet, leaderboardUpdate, leaderboardGet } from "./storage";
 
 // ---------- Constants ----------
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -178,6 +178,33 @@ function settleOyes(participants, bet, pctFront, pctBack, entries, v1, v2) {
   return { frontWinners, backWinners, netFront, netBack, net };
 }
 
+function computeLeaderboardEntry(userId, userName, rounds) {
+  const mine = rounds.filter((r) => r.participants?.some((p) => p.playerId === userId));
+  if (!mine.length) return { name: userName, rounds: 0, avgGross: 0, avgNet: 0, bestNet: null, medalWins: 0, stablefordWins: 0, oyeWins: 0, lastPlayed: null };
+  let totalGross = 0, totalNet = 0, bestNet = Infinity, medalWins = 0, stablefordWins = 0, oyeWins = 0;
+  for (const r of mine) {
+    const p = r.participants.find((p) => p.playerId === userId);
+    if (!p) continue;
+    totalGross += p.grossTotal || 0;
+    totalNet += p.netMedal || 0;
+    if ((p.netMedal || 0) < bestNet) bestNet = p.netMedal || 0;
+    if (r.winners?.medalOverall?.includes(userId)) medalWins++;
+    if (r.winners?.stablefordOverall?.includes(userId)) stablefordWins++;
+    if (r.winners?.oyeFront?.includes(userId) || r.winners?.oyeBack?.includes(userId)) oyeWins++;
+  }
+  return {
+    name: userName,
+    rounds: mine.length,
+    avgGross: Math.round(totalGross / mine.length),
+    avgNet: Math.round(totalNet / mine.length),
+    bestNet: bestNet === Infinity ? null : bestNet,
+    medalWins,
+    stablefordWins,
+    oyeWins,
+    lastPlayed: mine[0]?.date?.slice(0, 10) || null,
+  };
+}
+
 // ---------- Storage ----------
 async function loadData() {
   try {
@@ -296,6 +323,22 @@ export default function ScoreKeeper() {
     });
   }, []);
 
+  useEffect(() => {
+    if (!myUserId || !firebaseEnabled) return;
+    roundsGet(myUserId).then((fbRounds) => {
+      loadData().then((d) => {
+        const localRounds = d.rounds || [];
+        const fbIds = new Set(fbRounds.map((r) => r.id));
+        const missing = localRounds.filter((r) => !fbIds.has(r.id));
+        missing.forEach((r) => roundSave(myUserId, r));
+        const merged = [...fbRounds, ...missing].sort((a, b) =>
+          (b.date || "").localeCompare(a.date || "")
+        );
+        if (merged.length > 0) setRounds(merged);
+      });
+    });
+  }, [myUserId]);
+
   // Push a round to the shared group store
   const pushRoundToGroup = async (round, code) => {
     if (!code) return;
@@ -334,12 +377,27 @@ export default function ScoreKeeper() {
       groupCode: next.groupCode ?? groupCode,
     };
     if (next.rounds !== undefined) setRounds(next.rounds);
-    if (next.courses) setCourses(next.courses);
-    if (next.percentages) setPercentages(next.percentages);
+    if (next.courses) {
+      setCourses(next.courses);
+      if (myUserId) userUpdate(myUserId, { courses: next.courses });
+    }
+    if (next.percentages) {
+      setPercentages(next.percentages);
+      if (myUserId) userUpdate(myUserId, { percentages: next.percentages });
+    }
     if (next.groupCode !== undefined) setGroupCode(next.groupCode);
     saveData(data);
     if (next.rounds && next.rounds.length > rounds.length) {
       pushRoundToGroup(next.rounds[0], next.groupCode ?? groupCode);
+      if (myUserId && firebaseEnabled) {
+        const newRound = next.rounds[0];
+        roundSave(myUserId, newRound).then(() =>
+          roundsGet(myUserId).then((all) => {
+            const entry = computeLeaderboardEntry(myUserId, myProfile?.name || "", all);
+            leaderboardUpdate(myUserId, entry);
+          })
+        );
+      }
     }
   };
 
@@ -414,6 +472,7 @@ export default function ScoreKeeper() {
             ["historial", "📋 Historial"],
             ["acumulado", "Acumulado"],
             ["mystats", "Mis Stats"],
+            ["ranking", "Ranking"],
           ].map(([key, label]) => (
             <button
               key={key}
@@ -476,6 +535,7 @@ export default function ScoreKeeper() {
         )}
         {tab === "acumulado" && <StandingsTab rounds={rounds} />}
         {tab === "mystats" && <MyStatsTab rounds={rounds} />}
+        {tab === "ranking" && <LeaderboardTab />}
       </main>
     </div>
   );
@@ -753,7 +813,15 @@ function RoundTab({ myUserId, myProfile, courses, percentages, onSavePercentages
   }, [courses]);
 
   useEffect(() => { setPct(percentages); }, [percentages]);
-  useEffect(() => { if (myProfile?.handicap != null) { setMyHcpForRound(myProfile.handicap); setJoinHcp(myProfile.handicap); } }, [myProfile]);
+  useEffect(() => {
+    if (!myProfile) return;
+    if (myProfile.handicap != null) {
+      setMyHcpForRound(myProfile.handicap);
+      setJoinHcp(myProfile.handicap);
+    }
+    if (myProfile.courses?.length) setCourses(myProfile.courses);
+    if (myProfile.percentages) setPercentages(myProfile.percentages);
+  }, [myProfile]);
 
   const course = courses.find((c) => c.id === courseId);
   const isHost = meta?.createdBy === myUserId;
@@ -2097,6 +2165,76 @@ function MyStatsTab({ rounds }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function LeaderboardTab() {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+
+  const load = () => {
+    setLoading(true);
+    leaderboardGet().then((raw) => {
+      const rows = Object.entries(raw).map(([id, v]) => ({ id, ...v }))
+        .filter((r) => r.rounds > 0)
+        .sort((a, b) => (a.avgNet || 0) - (b.avgNet || 0));
+      setData(rows);
+      setLoading(false);
+    });
+  };
+
+  React.useEffect(() => { load(); }, []);
+
+  return (
+    <div className="p-3 font-body">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-display text-emerald-900 text-lg">Ranking Global</h2>
+        <button
+          onClick={load}
+          disabled={loading}
+          style={{ touchAction: "manipulation" }}
+          className="text-xs px-3 py-1.5 rounded-lg bg-emerald-800 text-amber-50 disabled:opacity-50"
+        >
+          {loading ? "Cargando…" : "Actualizar"}
+        </button>
+      </div>
+      {loading && <p className="text-stone-400 text-sm text-center py-8">Cargando ranking…</p>}
+      {!loading && (!data || data.length === 0) && (
+        <p className="text-stone-400 text-sm text-center py-8">Aún no hay rondas registradas.</p>
+      )}
+      {!loading && data && data.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="text-xs text-stone-500 border-b border-stone-200">
+                <th className="text-left py-1 pr-2">#</th>
+                <th className="text-left py-1 pr-3">Jugador</th>
+                <th className="text-center py-1 pr-2">Rondas</th>
+                <th className="text-center py-1 pr-2">Gross</th>
+                <th className="text-center py-1 pr-2">Net</th>
+                <th className="text-center py-1 pr-2">Mejor</th>
+                <th className="text-center py-1 pr-2">🏅</th>
+                <th className="text-center py-1">Última</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((row, i) => (
+                <tr key={row.id} className={`border-b border-stone-100 ${i === 0 ? "bg-amber-50" : ""}`}>
+                  <td className="py-2 pr-2 text-stone-400">{i + 1}</td>
+                  <td className="py-2 pr-3 font-semibold text-emerald-900 truncate max-w-[100px]">{row.name || "—"}</td>
+                  <td className="py-2 pr-2 text-center text-stone-600">{row.rounds}</td>
+                  <td className="py-2 pr-2 text-center text-stone-600">{row.avgGross ?? "—"}</td>
+                  <td className="py-2 pr-2 text-center font-semibold text-emerald-800">{row.avgNet ?? "—"}</td>
+                  <td className="py-2 pr-2 text-center text-stone-600">{row.bestNet ?? "—"}</td>
+                  <td className="py-2 pr-2 text-center text-stone-600">{(row.medalWins || 0) + (row.stablefordWins || 0) + (row.oyeWins || 0)}</td>
+                  <td className="py-2 text-center text-stone-400 text-xs">{row.lastPlayed || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

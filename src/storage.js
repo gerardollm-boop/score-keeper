@@ -87,3 +87,34 @@ export async function userUpdate(userId, fields) {
   try { await update(ref(db, `scorekeeper/users/${userId}`), fields); }
   catch (e) {}
 }
+
+export async function roundSave(userId, round) {
+  if (!db) return;
+  try { await set(ref(db, `scorekeeper/rounds/${userId}/${round.id}`), round); }
+  catch (e) {}
+}
+
+export async function roundsGet(userId) {
+  if (!db) return [];
+  try {
+    const snap = await get(ref(db, `scorekeeper/rounds/${userId}`));
+    if (!snap.exists()) return [];
+    return Object.values(snap.val()).sort((a, b) =>
+      (b.date || "").localeCompare(a.date || "")
+    );
+  } catch (e) { return []; }
+}
+
+export async function leaderboardUpdate(userId, fields) {
+  if (!db) return;
+  try { await update(ref(db, `scorekeeper/leaderboard/${userId}`), fields); }
+  catch (e) {}
+}
+
+export async function leaderboardGet() {
+  if (!db) return {};
+  try {
+    const snap = await get(ref(db, "scorekeeper/leaderboard"));
+    return snap.exists() ? snap.val() : {};
+  } catch (e) { return {}; }
+}
