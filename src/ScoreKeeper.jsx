@@ -1756,6 +1756,7 @@ function HalfScorecard({ title, holeNumbers, selectedIds, players, scores, setSc
       <p className="text-xs text-stone-400 font-body mt-0.5">Stats: activa los campos que quieras registrar para cada jugador (desactivados por defecto).</p>
       {editing && (
         <ScoreModal
+          key={editing.h}
           hole={editing.h}
           par={editing.par}
           playerName={editing.name}
