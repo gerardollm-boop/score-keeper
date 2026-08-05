@@ -9,6 +9,14 @@ const DEFAULT_PARS = [4, 4, 3, 5, 4, 3, 4, 5, 4, 4, 5, 3, 4, 4, 3, 5, 4, 4];
 const DEFAULT_SI_FROM1 = [5, 11, 17, 1, 9, 15, 7, 3, 13, 6, 2, 16, 8, 12, 18, 4, 10, 14];
 const DEFAULT_SI_FROM10 = [...DEFAULT_SI_FROM1.slice(9), ...DEFAULT_SI_FROM1.slice(0, 9)];
 
+const EL_CAMPANARIO_COURSE = {
+  id: "el-campanario-oficial",
+  name: "El Campanario Residencial & Golf",
+  pars:     [5, 4, 3, 4, 3, 4, 5, 4, 4,  4, 4, 3, 4, 4, 3, 5, 4, 5],
+  siFrom1:  [5, 3, 9,11,13,15, 7,17, 1,  2, 8,18,16, 6,10, 4,12,14],
+  siFrom10: [2, 8,18,16, 6,10, 4,12,14,  5, 3, 9,11,13,15, 7,17, 1],
+};
+
 const DEFAULT_PCT = {
   stablefordFront: 10,
   stablefordBack: 10,
@@ -338,6 +346,16 @@ export default function ScoreKeeper() {
       });
     });
   }, [myUserId]);
+
+  useEffect(() => {
+    if (!myProfile) return;
+    const profileCourses = myProfile.courses || [];
+    const hasCampanario = profileCourses.some((c) => c.id === EL_CAMPANARIO_COURSE.id);
+    const mergedCourses = hasCampanario ? profileCourses : [EL_CAMPANARIO_COURSE, ...profileCourses];
+    setCourses(mergedCourses);
+    if (!hasCampanario && myUserId && firebaseEnabled) userUpdate(myUserId, { courses: mergedCourses });
+    if (myProfile.percentages) setPercentages(myProfile.percentages);
+  }, [myProfile]);
 
   // Push a round to the shared group store
   const pushRoundToGroup = async (round, code) => {
@@ -814,13 +832,10 @@ function RoundTab({ myUserId, myProfile, courses, percentages, onSavePercentages
 
   useEffect(() => { setPct(percentages); }, [percentages]);
   useEffect(() => {
-    if (!myProfile) return;
-    if (myProfile.handicap != null) {
+    if (myProfile?.handicap != null) {
       setMyHcpForRound(myProfile.handicap);
       setJoinHcp(myProfile.handicap);
     }
-    if (myProfile.courses?.length) setCourses(myProfile.courses);
-    if (myProfile.percentages) setPercentages(myProfile.percentages);
   }, [myProfile]);
 
   const course = courses.find((c) => c.id === courseId);
